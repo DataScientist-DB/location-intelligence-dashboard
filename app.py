@@ -83,14 +83,32 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
         axis=1
     )
 
-    # Demo composite score (0..100)
+    # Realistic composite score (0..100)
+    # Goals:
+    # - Typical averages ~55–85
+    # - Stronger distance penalty
+    # - Ratings matter, but don't max out
+    # - Reviews help, but with diminishing returns
+    # - Competitors get a modest penalty
+    # - Add small noise to avoid "too perfect" results
+
+    dist_norm = (df["distance_m"] / radius_m).clip(0, 1)  # 0 close → 1 far
+    rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)  # 3..5 → 0..1
+    review_norm = (np.log1p(df["review_count"]) / np.log1p(1200)).clip(0, 1)  # 0..1
+
+    rng2 = np.random.default_rng(seed + 999)  # stable but different from point gen
+    noise = rng2.normal(0, 4.0, len(df))  # +/- few points
+
     score = (
-        (df["rating"] * 18)
-        + np.log1p(df["review_count"]) * 10
-        + (1 - (df["distance_m"] / radius_m).clip(0, 1)) * 25
-        - df["is_competitor"].astype(int) * 6
+            15
+            + 45 * rating_norm  # ratings drive quality
+            + 18 * review_norm  # reviews help but saturate
+            + 22 * (1 - dist_norm)  # distance matters more now
+            - 7 * df["is_competitor"].astype(int)  # competitor penalty
+            + noise
     )
-    df["score"] = np.clip(score.round(0), 0, 100).astype(int)
+
+    df["score"] = np.clip(np.round(score), 0, 100).astype(int)
 
     # Demo coverage proxy (0..1)
     df["coverage_pct"] = np.clip((df["score"] / 100) * rng.uniform(0.7, 1.1, n), 0, 1).round(2)
@@ -104,14 +122,15 @@ st.markdown(
     """
 <div class="card">
   <div>
-    <span class="badge">Portfolio Demo</span>
+    <span class="badge">Analytics Dashboard</span>
+
     <span class="badge">Location Intelligence</span>
     <span class="badge">KPIs • Map • Export</span>
   </div>
   <h1>🧭 Location Intelligence Dashboard</h1>
   <div class="muted">
-    Business-focused dashboard illustrating market saturation signals, competitor benchmarking, service coverage proxies,
-    and export-ready reporting from structured location datasets.
+  Executive-ready location analytics dashboard for market saturation analysis, competitor benchmarking, and site selection strategy.
+
   </div>
 </div>
 """,
@@ -260,7 +279,9 @@ with tab_method:
     st.markdown("### What this demo represents")
     st.markdown(
         """
-This is a **portfolio dashboard** using **generated sample data** to demonstrate the UI and reporting format.
+This dashboard illustrates the structure and reporting format of an automated location analytics pipeline. 
+Data shown here is sample-formatted for demonstration purposes.
+
 
 In production, the same dashboard can be connected to a real automated data pipeline that:
 - Collects POIs from selected sources
