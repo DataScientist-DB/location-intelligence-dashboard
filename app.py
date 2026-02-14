@@ -174,6 +174,21 @@ total = len(df)
 avg_score = float(df["score"].mean()) if total else 0.0
 avg_rating = float(df["rating"].mean()) if total else 0.0
 density = density_per_km2(total, radius_m)
+def score_label(val: float) -> str:
+    if val < 50:
+        return "🔴 Weak"
+    elif val < 70:
+        return "🟠 Moderate"
+    return "🟢 Strong"
+
+def pct_label(val01: float) -> str:
+    # val01 is 0..1
+    pct = val01 * 100
+    if pct < 30:
+        return "🔴 Low"
+    elif pct < 60:
+        return "🟠 Medium"
+    return "🟢 High"
 
 comp_share = float(df["is_competitor"].mean()) if total else 0.0
 opp_index = (avg_score / 100.0) * (1.0 - comp_share)
@@ -187,10 +202,10 @@ tab_overview, tab_results, tab_method = st.tabs(["📌 Overview", "📋 Results"
 with tab_overview:
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Results", total)
-    c2.metric("Avg Score", f"{avg_score:.1f}/100")
+    c2.metric("Avg Score", f"{avg_score:.1f}/100", score_label(avg_score))
     c3.metric("Avg Rating", f"{avg_rating:.2f}⭐")
     c4.metric("Density", f"{density:.1f}/km²")
-    c5.metric("Opportunity", f"{opp_index*100:.0f}%")
+    c5.metric("Opportunity", f"{opp_index * 100:.0f}%", pct_label(opp_index))
 
     st.write("")
     left, right = st.columns([1.15, 1])
