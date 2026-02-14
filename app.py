@@ -126,9 +126,11 @@ st.write("")
 st.sidebar.header("Scenario")
 city = st.sidebar.text_input("City / Area", "Los Angeles, CA")
 
+st.sidebar.header("Area Settings")
+
 preset = st.sidebar.selectbox(
-    "Demo scenario (map center)",
-    ["LA Downtown", "Washington, DC", "New York Midtown", "Berlin Mitte"]
+    "Select area",
+    ["Los Angeles", "Washington, DC", "New York", "Berlin"]
 )
 
 category = st.sidebar.selectbox("Category", ["pharmacy", "restaurant", "hospital", "school", "grocery"])
