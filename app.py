@@ -189,15 +189,24 @@ def pct_label(val01: float) -> str:
     elif pct < 60:
         return "🟠 Medium"
     return "🟢 High"
-def opportunity_recommendation(opp_index: float) -> str:
+def opportunity_recommendation(opp_index: float):
     pct = opp_index * 100
 
     if pct < 30:
-        return "🔴 Market appears saturated. Consider differentiation strategy or alternative zones."
+        return {
+            "text": "Market appears saturated. Consider differentiation strategy or alternative zones.",
+            "color": "#ffe5e5"  # light red
+        }
     elif pct < 60:
-        return "🟠 Moderate opportunity. Target micro-locations with stronger quality or proximity advantages."
+        return {
+            "text": "Moderate opportunity. Target micro-locations with stronger quality or proximity advantages.",
+            "color": "#fff4e0"  # light orange
+        }
     else:
-        return "🟢 Strong opportunity. Area shows favorable balance between quality signals and competition."
+        return {
+            "text": "Strong opportunity. Area shows favorable balance between quality signals and competition.",
+            "color": "#e6f4ea"  # light green
+        }
 
 comp_share = float(df["is_competitor"].mean()) if total else 0.0
 opp_index = (avg_score / 100.0) * (1.0 - comp_share)
@@ -217,13 +226,18 @@ with tab_overview:
     c5.metric("Opportunity", f"{opp_index * 100:.0f}%", pct_label(opp_index))
 
     st.write("")
-    st.markdown("### Executive Insight")
+    rec = opportunity_recommendation(opp_index)
 
     st.markdown(
         f"""
-    <div class="card">
-    <b>Recommendation:</b><br>
-    {opportunity_recommendation(opp_index)}
+    <div style="
+        border-radius:16px;
+        padding:16px;
+        background:{rec['color']};
+        border:1px solid rgba(0,0,0,0.05);
+    ">
+    <b>Executive Insight:</b><br><br>
+    {rec['text']}
     </div>
     """,
         unsafe_allow_html=True,
