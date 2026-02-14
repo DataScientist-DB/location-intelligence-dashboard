@@ -11,11 +11,9 @@ st.set_page_config(page_title="Location Intelligence Dashboard", layout="wide")
 st.markdown(
     """
 <style>
-/* tighten top padding */
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
-/* nicer headings spacing */
 h1, h2, h3 { margin-bottom: 0.3rem; }
-/* subtle card */
+
 .card {
   border: 1px solid rgba(49, 51, 63, 0.12);
   border-radius: 16px;
@@ -56,8 +54,10 @@ def density_per_km2(count: int, radius_m: int) -> float:
 
 def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     rng = np.random.default_rng(seed)
-    r_deg = (radius_m / 1000.0) / 111.0  # approx
-    angles = rng.uniform(0, 2*np.pi, n)
+
+    # Spread points in a circle around the center
+    r_deg = (radius_m / 1000.0) / 111.0  # approx degrees per km
+    angles = rng.uniform(0, 2 * np.pi, n)
     radii = r_deg * np.sqrt(rng.uniform(0, 1, n))
 
     lats = center_lat + radii * np.cos(angles)
@@ -68,49 +68,42 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     reviews = np.clip(rng.normal(180, 90, n).astype(int), 5, 1200)
     competitor_flag = rng.choice([True, False], size=n, p=[0.35, 0.65])
 
-    df = pd.DataFrame({
-        "name": names,
-        "category": category,
-        "lat": lats.round(6),
-        "lng": lons.round(6),
-        "rating": ratings.round(1),
-        "review_count": reviews,
-        "is_competitor": competitor_flag,
-    })
+    df = pd.DataFrame(
+        {
+            "name": names,
+            "category": category,
+            "lat": lats.round(6),
+            "lng": lons.round(6),
+            "rating": ratings.round(1),
+            "review_count": reviews,
+            "is_competitor": competitor_flag,
+        }
+    )
 
     df["distance_m"] = df.apply(
         lambda r: int(haversine_km(center_lat, center_lon, r["lat"], r["lng"]) * 1000),
-        axis=1
+        axis=1,
     )
 
     # Realistic composite score (0..100)
-    # Goals:
-    # - Typical averages ~55–85
-    # - Stronger distance penalty
-    # - Ratings matter, but don't max out
-    # - Reviews help, but with diminishing returns
-    # - Competitors get a modest penalty
-    # - Add small noise to avoid "too perfect" results
+    dist_norm = (df["distance_m"] / radius_m).clip(0, 1)                 # 0 close → 1 far
+    rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)               # 3..5 → 0..1
+    review_norm = (np.log1p(df["review_count"]) / np.log1p(1200)).clip(0, 1)
 
-    dist_norm = (df["distance_m"] / radius_m).clip(0, 1)  # 0 close → 1 far
-    rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)  # 3..5 → 0..1
-    review_norm = (np.log1p(df["review_count"]) / np.log1p(1200)).clip(0, 1)  # 0..1
-
-    rng2 = np.random.default_rng(seed + 999)  # stable but different from point gen
-    noise = rng2.normal(0, 4.0, len(df))  # +/- few points
+    rng2 = np.random.default_rng(seed + 999)
+    noise = rng2.normal(0, 4.0, len(df))  # add a little realism
 
     score = (
-            15
-            + 45 * rating_norm  # ratings drive quality
-            + 18 * review_norm  # reviews help but saturate
-            + 22 * (1 - dist_norm)  # distance matters more now
-            - 7 * df["is_competitor"].astype(int)  # competitor penalty
-            + noise
+        15
+        + 45 * rating_norm
+        + 18 * review_norm
+        + 22 * (1 - dist_norm)
+        - 7 * df["is_competitor"].astype(int)
+        + noise
     )
-
     df["score"] = np.clip(np.round(score), 0, 100).astype(int)
 
-    # Demo coverage proxy (0..1)
+    # Coverage proxy (0..1) — used only as a lightweight signal
     df["coverage_pct"] = np.clip((df["score"] / 100) * rng.uniform(0.7, 1.1, n), 0, 1).round(2)
 
     return df.sort_values(["score", "review_count"], ascending=False).reset_index(drop=True)
@@ -123,14 +116,12 @@ st.markdown(
 <div class="card">
   <div>
     <span class="badge">Analytics Dashboard</span>
-
     <span class="badge">Location Intelligence</span>
     <span class="badge">KPIs • Map • Export</span>
   </div>
   <h1>🧭 Location Intelligence Dashboard</h1>
   <div class="muted">
-  Executive-ready location analytics dashboard for market saturation analysis, competitor benchmarking, and site selection strategy.
-
+    Executive-ready location analytics dashboard for market saturation analysis, competitor benchmarking, and site selection strategy.
   </div>
 </div>
 """,
@@ -142,19 +133,17 @@ st.write("")
 # -----------------------------
 # Sidebar controls
 # -----------------------------
-st.sidebar.header("Scenario")
+st.sidebar.header("Inputs")
 city = st.sidebar.text_input("City / Area", "Los Angeles, CA")
 
 preset = st.sidebar.selectbox(
     "Area",
-    ["Los Angeles (Downtown)", "Washington, DC", "New York (Midtown)", "Berlin (Mitte)"]
+    ["Los Angeles (Downtown)", "Washington, DC", "New York (Midtown)", "Berlin (Mitte)"],
 )
 
 category = st.sidebar.selectbox("Category", ["pharmacy", "restaurant", "hospital", "school", "grocery"])
 radius_m = st.sidebar.selectbox("Radius (meters)", [300, 500, 1000, 1500, 2000], index=2)
 n_points = st.sidebar.slider("Number of results", 10, 120, 45, step=5)
-
-seed = 42
 
 show_competitors = st.sidebar.checkbox("Include competitors", value=True)
 
@@ -170,7 +159,7 @@ centers = {
 }
 center_lat, center_lon = centers[preset]
 
-
+seed = 42  # stable demo runs
 
 # -----------------------------
 # Data
@@ -185,7 +174,6 @@ avg_score = float(df["score"].mean()) if total else 0.0
 avg_rating = float(df["rating"].mean()) if total else 0.0
 density = density_per_km2(total, radius_m)
 
-# A simple “opportunity” proxy: higher score concentration + lower competitor share
 comp_share = float(df["is_competitor"].mean()) if total else 0.0
 opp_index = (avg_score / 100.0) * (1.0 - comp_share)
 opp_index = max(0.0, min(1.0, opp_index))
@@ -196,7 +184,6 @@ opp_index = max(0.0, min(1.0, opp_index))
 tab_overview, tab_results, tab_method = st.tabs(["📌 Overview", "📋 Results", "🧠 Method"])
 
 with tab_overview:
-    # KPI row
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Results", total)
     c2.metric("Avg Score", f"{avg_score:.1f}/100")
@@ -213,7 +200,7 @@ with tab_overview:
             """
 - **Market saturation signal:** density + competitor share to gauge crowded vs underserved areas  
 - **Benchmarking:** compare categories, radii, and zones consistently  
-- **Decision support:** produce exportable reports for **site selection**, **retail strategy**, and **investment memos**  
+- **Decision support:** export-ready reporting for **site selection**, **retail strategy**, and **investment memos**  
 - **Stakeholder-friendly:** KPIs + map + downloadable dataset for quick review
 """
         )
@@ -228,8 +215,7 @@ with tab_overview:
         )
 
     with right:
-        st.markdown("### Score distribution")
-
+        st.markdown("### Map preview")
         map_df = df[["lat", "lng"]].rename(columns={"lat": "latitude", "lng": "longitude"})
         st.map(map_df, zoom=12)
         st.markdown(
@@ -238,12 +224,10 @@ with tab_overview:
         )
 
     st.write("")
-    st.markdown("### Score distribution (demo)")
-    # Streamlit can chart directly from dataframe
+    st.markdown("### Score distribution")
     hist = df[["score"]].copy()
     hist["bucket"] = (hist["score"] // 10) * 10
-    dist = hist.groupby("bucket").size().reset_index(name="count").sort_values("bucket")
-    dist = dist.set_index("bucket")
+    dist = hist.groupby("bucket").size().reset_index(name="count").sort_values("bucket").set_index("bucket")
     st.bar_chart(dist)
 
 with tab_results:
@@ -265,25 +249,29 @@ with tab_results:
     with right:
         st.subheader("Top performers")
         top = df.sort_values(["score", "rating", "review_count"], ascending=False).head(10)
-        st.dataframe(top[["name", "rating", "review_count", "distance_m", "score", "is_competitor"]],
-                     use_container_width=True, height=350)
+        st.dataframe(
+            top[["name", "rating", "review_count", "distance_m", "score", "is_competitor"]],
+            use_container_width=True,
+            height=350,
+        )
 
         st.subheader("Competitor share")
-        comp = pd.DataFrame({
-            "segment": ["Competitors", "Non-competitors"],
-            "count": [int(df["is_competitor"].sum()), int((~df["is_competitor"]).sum())]
-        }).set_index("segment")
+        comp = pd.DataFrame(
+            {
+                "segment": ["Competitors", "Non-competitors"],
+                "count": [int(df["is_competitor"].sum()), int((~df["is_competitor"]).sum())],
+            }
+        ).set_index("segment")
         st.bar_chart(comp)
 
 with tab_method:
-    st.markdown("### What this demo represents")
+    st.markdown("### What this dashboard represents")
     st.markdown(
         """
-This dashboard illustrates the structure and reporting format of an automated location analytics pipeline. 
-Data shown here is sample-formatted for demonstration purposes.
+This dashboard illustrates the structure and reporting format of an automated location analytics pipeline.  
+Data shown here is **sample-formatted for demonstration purposes**.
 
-
-In production, the same dashboard can be connected to a real automated data pipeline that:
+In production, the same dashboard can be connected to a live pipeline that:
 - Collects POIs from selected sources
 - Cleans & deduplicates entities
 - Applies scoring rules (distance, quality signals, category relevance, competitor labeling)
@@ -291,21 +279,21 @@ In production, the same dashboard can be connected to a real automated data pipe
 """
     )
 
-    st.markdown("### Interpretation notes (demo)")
+    st.markdown("### Interpretation notes")
     st.markdown(
         """
-- **Score** is a demo composite of proximity + rating + reviews (and a competitor penalty).  
-- **Density** is result count divided by circular area within selected radius.  
-- **Opportunity** is a simple proxy: higher average score and lower competitor share.  
+- **Score** is a composite signal from proximity, quality (rating), demand proxy (reviews), and competitor labeling.  
+- **Density** is the number of results divided by the circular area within the selected radius.  
+- **Opportunity** is a lightweight proxy combining average score and competitor share.  
 """
     )
 
     st.markdown("### Compliance note")
     st.markdown(
         """
-This page includes **no external contact information** and is intended purely as a portfolio demonstration.
+This page includes **no external contact information** and is intended for portfolio demonstration.
 """
     )
 
 st.write("")
-st.caption("Demo note: This app uses generated sample data for portfolio presentation. In production it can be connected to a live backend.")
+st.caption("Note: Data shown is sample-formatted for demonstration. The dashboard can be connected to a live backend when needed.")
