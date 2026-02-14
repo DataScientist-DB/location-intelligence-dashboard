@@ -135,7 +135,8 @@ category = st.sidebar.selectbox("Category", ["pharmacy", "restaurant", "hospital
 radius_m = st.sidebar.selectbox("Radius (meters)", [300, 500, 1000, 1500, 2000], index=2)
 n_points = st.sidebar.slider("Number of results", 10, 120, 45, step=5)
 
-seed = st.sidebar.number_input("Random seed (demo)", value=42, step=1)
+seed = 42
+
 show_competitors = st.sidebar.checkbox("Include competitors", value=True)
 
 st.sidebar.divider()
@@ -143,17 +144,20 @@ st.sidebar.subheader("Export")
 export_name = st.sidebar.text_input("CSV file name", "location_intelligence_demo.csv")
 
 centers = {
-    "LA Downtown": (34.052235, -118.243683),
+    "Los Angeles (Downtown)": (34.052235, -118.243683),
     "Washington, DC": (38.907192, -77.036873),
-    "New York Midtown": (40.754932, -73.984016),
-    "Berlin Mitte": (52.520008, 13.404954),
+    "New York (Midtown)": (40.754932, -73.984016),
+    "Berlin (Mitte)": (52.520008, 13.404954),
 }
 center_lat, center_lon = centers[preset]
+
+
 
 # -----------------------------
 # Data
 # -----------------------------
-df = make_demo_points(center_lat, center_lon, category, radius_m, n_points, seed=int(seed))
+df = make_demo_points(center_lat, center_lon, category, radius_m, n_points, seed=seed)
+
 if not show_competitors:
     df = df[df["is_competitor"] == False].reset_index(drop=True)
 
@@ -205,7 +209,8 @@ with tab_overview:
         )
 
     with right:
-        st.markdown("### Map preview")
+        st.markdown("### Score distribution")
+
         map_df = df[["lat", "lng"]].rename(columns={"lat": "latitude", "lng": "longitude"})
         st.map(map_df, zoom=12)
         st.markdown(
