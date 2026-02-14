@@ -189,6 +189,15 @@ def pct_label(val01: float) -> str:
     elif pct < 60:
         return "🟠 Medium"
     return "🟢 High"
+def opportunity_recommendation(opp_index: float) -> str:
+    pct = opp_index * 100
+
+    if pct < 30:
+        return "🔴 Market appears saturated. Consider differentiation strategy or alternative zones."
+    elif pct < 60:
+        return "🟠 Moderate opportunity. Target micro-locations with stronger quality or proximity advantages."
+    else:
+        return "🟢 Strong opportunity. Area shows favorable balance between quality signals and competition."
 
 comp_share = float(df["is_competitor"].mean()) if total else 0.0
 opp_index = (avg_score / 100.0) * (1.0 - comp_share)
@@ -206,6 +215,19 @@ with tab_overview:
     c3.metric("Avg Rating", f"{avg_rating:.2f}⭐")
     c4.metric("Density", f"{density:.1f}/km²")
     c5.metric("Opportunity", f"{opp_index * 100:.0f}%", pct_label(opp_index))
+
+    st.write("")
+    st.markdown("### Executive Insight")
+
+    st.markdown(
+        f"""
+    <div class="card">
+    <b>Recommendation:</b><br>
+    {opportunity_recommendation(opp_index)}
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
 
     st.write("")
     left, right = st.columns([1.15, 1])
