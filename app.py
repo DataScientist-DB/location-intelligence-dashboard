@@ -133,7 +133,8 @@ st.write("")
 # -----------------------------
 # Sidebar controls
 # -----------------------------
-st.sidebar.header("Inputs")
+st.sidebar.header("Analysis Parameters")
+
 city = st.sidebar.text_input("City / Area", "Los Angeles, CA")
 
 preset = st.sidebar.selectbox(
@@ -149,7 +150,7 @@ show_competitors = st.sidebar.checkbox("Include competitors", value=True)
 
 st.sidebar.divider()
 st.sidebar.subheader("Export")
-export_name = st.sidebar.text_input("CSV file name", "location_intelligence_demo.csv")
+export_name = st.sidebar.text_input("CSV file name", "location_intelligence_export.csv")
 
 centers = {
     "Los Angeles (Downtown)": (34.052235, -118.243683),
