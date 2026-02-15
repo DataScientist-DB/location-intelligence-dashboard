@@ -203,32 +203,53 @@ def opportunity_recommendation(
 # -----------------------------
 st.sidebar.header("Analysis Parameters")
 
-city = st.sidebar.text_input("City / Area", "Los Angeles, CA")
+city = st.sidebar.text_input("City / Area", "Los Angeles, CA", key="city")
 
 preset = st.sidebar.selectbox(
     "Area",
     ["Los Angeles (Downtown)", "Washington, DC", "New York (Midtown)", "Berlin (Mitte)"],
+    key="preset",
 )
 
-category = st.sidebar.selectbox("Category", ["pharmacy", "restaurant", "hospital", "school", "grocery"])
-radius_m = st.sidebar.selectbox("Radius (meters)", [300, 500, 1000, 1500, 2000], index=2)
-n_points = st.sidebar.slider("Number of results", 10, 120, 45, step=5)
+category = st.sidebar.selectbox(
+    "Category",
+    ["pharmacy", "restaurant", "hospital", "school", "grocery"],
+    key="category",
+)
 
-# NEW (keeps view, but makes competitor share meaningful)
+radius_m = st.sidebar.selectbox(
+    "Radius (meters)",
+    [300, 500, 1000, 1500, 2000],
+    index=2,
+    key="radius_m",
+)
+
+n_points = st.sidebar.slider(
+    "Number of results",
+    10, 120, 45, step=5,
+    key="n_points",
+)
+
 st.sidebar.divider()
 st.sidebar.subheader("Competitor Definition (optional)")
 
 competitor_keywords_text = st.sidebar.text_input(
     "Competitor keywords (comma-separated)",
     value="",
-    help="Example: CVS, Walgreens, Starbucks. If empty, competitor flags are random demo labels.",
+    help="Example: CVS, Walgreens, Starbucks. Leave blank for demo competitor labeling.",
+    key="competitor_keywords",
 )
 
-show_competitors = st.sidebar.checkbox("Include competitors", value=True)
+show_competitors = st.sidebar.checkbox("Include competitors", value=True, key="show_competitors")
 
 st.sidebar.divider()
 st.sidebar.subheader("Export")
-export_name = st.sidebar.text_input("CSV file name", "location_intelligence_export.csv")
+
+export_name = st.sidebar.text_input(
+    "CSV file name",
+    "location_intelligence_export.csv",
+    key="export_name",
+)
 
 centers = {
     "Los Angeles (Downtown)": (34.052235, -118.243683),
@@ -307,7 +328,8 @@ with tab_overview:
     c1.metric("Results", total)
     c2.metric("Avg Score", f"{avg_score:.1f}/100", score_label(avg_score))
     c3.metric("Avg Rating", f"{avg_rating:.2f}⭐")
-    c4.metric("Density", f"{density:.1f}/km²")
+    c4.metric("Density (/km²)", f"{density:.1f}")
+
     c5.metric("Opportunity", f"{opp_index * 100:.0f}%", pct_label(opp_index))
 
     st.write("")
