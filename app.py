@@ -3,11 +3,23 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from io import BytesIO
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+# -----------------------------------------------------------------------------
+# IMPORTANT (Streamlit Cloud):
+# If you want the PDF export to work, add this to requirements.txt:
+#   reportlab
+# If reportlab is not installed, the app will still run, but PDF export is disabled.
+# -----------------------------------------------------------------------------
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    REPORTLAB_OK = True
+except Exception:
+    REPORTLAB_OK = False
 
 st.set_page_config(page_title="Location Intelligence Dashboard", layout="wide")
 
@@ -54,9 +66,11 @@ def haversine_km(lat1, lon1, lat2, lon2) -> float:
     a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlon / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
 
+
 def density_per_km2(count: int, radius_m: int) -> float:
     area_km2 = math.pi * (radius_m / 1000.0) ** 2
     return (count / area_km2) if area_km2 > 0 else 0.0
+
 
 @st.cache_data(show_spinner=False)
 def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
@@ -95,8 +109,8 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     )
 
     # Composite score (0..100)
-    dist_norm = (df["distance_m"] / radius_m).clip(0, 1)                 # 0 close → 1 far
-    rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)               # 3..5 → 0..1
+    dist_norm = (df["distance_m"] / radius_m).clip(0, 1)  # 0 close → 1 far
+    rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)  # 3..5 → 0..1
     review_norm = (np.log1p(df["review_count"]) / np.log1p(1200)).clip(0, 1)
 
     rng2 = np.random.default_rng(seed + 999)
@@ -117,12 +131,14 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
 
     return df.sort_values(["score", "review_count"], ascending=False).reset_index(drop=True)
 
+
 def score_label(val: float) -> str:
     if val < 50:
         return "🔴 Weak"
     elif val < 70:
         return "🟠 Moderate"
     return "🟢 Strong"
+
 
 def pct_label(val01: float) -> str:
     pct = val01 * 100
@@ -132,6 +148,7 @@ def pct_label(val01: float) -> str:
         return "🟠 Medium"
     return "🟢 High"
 
+
 def pressure_label(val: float) -> str:
     if val < 35:
         return "🟢 Low"
@@ -139,23 +156,56 @@ def pressure_label(val: float) -> str:
         return "🟠 Medium"
     return "🔴 High"
 
+
 def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
+
 
 def compute_pressure_and_risk(density: float, comp_share: float, avg_score: float) -> tuple[float, float]:
     """
     Competitive Pressure (0..100): competition + density-driven intensity.
     Entry Risk (0..100): pressure + weak quality signals.
     """
-    # Density scaling: 0..~20 is typical; clamp stronger markets
-    dens_n = clamp01(density / 20.0)
-    comp_n = clamp01(comp_share)  # already 0..1
+    dens_n = clamp01(density / 20.0)  # density scaling for demo
+    comp_n = clamp01(comp_share)      # already 0..1
     quality_n = clamp01(avg_score / 100.0)
 
     pressure = 100.0 * (0.55 * comp_n + 0.45 * dens_n)
     risk = 100.0 * (0.55 * (1.0 - quality_n) + 0.45 * (0.55 * comp_n + 0.45 * dens_n))
 
     return float(round(pressure, 0)), float(round(risk, 0))
+
+
+# -----------------------------
+# 1) Market Type Classification (Executive badge)
+# -----------------------------
+def market_classification(opp_index: float) -> str:
+    pct = float(opp_index) * 100.0
+    if pct < 30:
+        return "Saturated Market"
+    elif pct < 60:
+        return "Selective Market"
+    return "Expansion Market"
+
+
+# -----------------------------
+# 4) One-line Investment Verdict
+# -----------------------------
+def investment_verdict(opp_index: float) -> str:
+    if opp_index > 0.6:
+        return "Investment viability: Strong — favorable structural conditions."
+    elif opp_index > 0.3:
+        return "Investment viability: Moderate — outcome depends on micro-location execution."
+    return "Investment viability: Weak — competitive/saturation pressure likely dominates returns."
+
+
+def _competitive_intensity_text(comp_share: float) -> str:
+    if comp_share > 0.45:
+        return "high competitive intensity"
+    if comp_share >= 0.25:
+        return "moderate competitive intensity"
+    return "limited competitive intensity"
+
 
 def opportunity_recommendation(
     opp_index: float,
@@ -176,7 +226,6 @@ def opportunity_recommendation(
     pct = opp_index * 100.0
     comp_pct = comp_share * 100.0
 
-
     # Density bands tuned for your demo (avoid calling 3.6/km² "highly saturated")
     if density >= 60:
         saturation_label = "highly saturated"
@@ -187,13 +236,15 @@ def opportunity_recommendation(
     else:
         saturation_label = "structurally underserved"
 
-    # Narrative templates
+    intensity = _competitive_intensity_text(comp_share)
+
     if pct < 30:
         return {
             "headline": "Limited Entry Attractiveness",
             "text": (
-                f"The area appears {saturation_label} with elevated competitive pressure "
-                f"({comp_pct:.0f}% competitor share). Market entry risk is high and returns depend on clear differentiation."
+                f"The area appears {saturation_label} with {intensity} "
+                f"({comp_pct:.0f}% competitor share). Entry conditions suggest elevated risk; "
+                f"returns depend on clear differentiation and a defensible micro-location."
             ),
             "action": "Re-check adjacent micro-zones, test a niche format, or improve offer differentiation before committing.",
             "basis": f"Opportunity {pct:.0f}% • Avg score {avg_score:.1f} • Competitor share {comp_pct:.0f}% • Density {density:.1f}/km² • Pressure {pressure_0_100:.0f}/100 • Risk {risk_0_100:.0f}/100",
@@ -204,8 +255,9 @@ def opportunity_recommendation(
         return {
             "headline": "Selective Opportunity",
             "text": (
-                f"The area shows {saturation_label} conditions with moderate competitive presence "
-                f"({comp_pct:.0f}% competitor share). Performance will depend on micro-location quality and brand positioning."
+                f"The area shows {saturation_label} conditions with {intensity} "
+                f"({comp_pct:.0f}% competitor share). Performance will depend on micro-location quality, "
+                f"access/visibility, and brand positioning."
             ),
             "action": "Shortlist high-footfall corners, test proximity to anchors, and conduct rental benchmarking prior to decision.",
             "basis": f"Opportunity {pct:.0f}% • Avg score {avg_score:.1f} • Competitor share {comp_pct:.0f}% • Density {density:.1f}/km² • Pressure {pressure_0_100:.0f}/100 • Risk {risk_0_100:.0f}/100",
@@ -215,13 +267,15 @@ def opportunity_recommendation(
     return {
         "headline": "Favorable Market Entry Conditions",
         "text": (
-            f"The area appears {saturation_label} with manageable competitive intensity "
-            f"({comp_pct:.0f}% competitor share). Market signals support expansion or new location feasibility."
+            f"The area appears {saturation_label} with {intensity} "
+            f"({comp_pct:.0f}% competitor share). Market signals support expansion or new location feasibility, "
+            f"subject to site-specific diligence."
         ),
         "action": "Proceed with site due diligence, access checks, and rental benchmarking; validate demand with a small pilot.",
         "basis": f"Opportunity {pct:.0f}% • Avg score {avg_score:.1f} • Competitor share {comp_pct:.0f}% • Density {density:.1f}/km² • Pressure {pressure_0_100:.0f}/100 • Risk {risk_0_100:.0f}/100",
         "color": "#e6f4ea",  # light green
     }
+
 
 def apply_competitor_keywords(df: pd.DataFrame, keywords_csv: str) -> pd.DataFrame:
     """
@@ -239,10 +293,13 @@ def apply_competitor_keywords(df: pd.DataFrame, keywords_csv: str) -> pd.DataFra
     df["is_competitor"] = df["is_competitor"] | hit
     return df
 
+
 def safe_mean(df: pd.DataFrame, col: str) -> float:
     if df is None or df.empty or col not in df.columns:
         return 0.0
     return float(df[col].mean())
+
+
 def build_executive_memo_pdf(
     *,
     city: str,
@@ -258,13 +315,18 @@ def build_executive_memo_pdf(
     pressure_0_100: float,
     risk_0_100: float,
     rec: dict,
+    market_type: str,
+    verdict: str,
     snapshot_df: pd.DataFrame,
     top_df: pd.DataFrame,
 ) -> bytes:
     """
     Returns PDF bytes for an executive-ready memo.
-    Uses reportlab (Streamlit Cloud-safe).
+    Uses reportlab (Streamlit Cloud-safe) if installed.
     """
+    if not REPORTLAB_OK:
+        return b""
+
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -320,6 +382,10 @@ def build_executive_memo_pdf(
     story.append(Paragraph(f"<b>City / Area label:</b> {city}", muted))
     story.append(Spacer(1, 8))
 
+    story.append(Paragraph(f"<b>Market type:</b> {market_type}", body))
+    story.append(Paragraph(f"<b>{verdict}</b>", body))
+    story.append(Spacer(1, 8))
+
     # KPI table
     story.append(Paragraph("Key Metrics", h_style))
     kpi_data = [
@@ -335,7 +401,7 @@ def build_executive_memo_pdf(
             f"{risk_0_100:.0f}/100",
         ],
     ]
-    t = Table(kpi_data, colWidths=[22*mm, 24*mm, 22*mm, 26*mm, 22*mm, 30*mm, 22*mm, 18*mm])
+    t = Table(kpi_data, colWidths=[22 * mm, 24 * mm, 22 * mm, 26 * mm, 22 * mm, 30 * mm, 22 * mm, 18 * mm])
     t.setStyle(
         TableStyle(
             [
@@ -353,15 +419,15 @@ def build_executive_memo_pdf(
     story.append(t)
     story.append(Spacer(1, 10))
 
-    # Executive insight box
+    # Executive insight
     story.append(Paragraph("Executive Insight", h_style))
-    story.append(Paragraph(f"<b>{rec.get('headline','')}</b>", body))
+    story.append(Paragraph(f"<b>{rec.get('headline', '')}</b>", body))
     story.append(Spacer(1, 4))
     story.append(Paragraph(rec.get("text", ""), body))
     story.append(Spacer(1, 6))
-    story.append(Paragraph(f"<b>Recommended next step:</b> {rec.get('action','')}", body))
+    story.append(Paragraph(f"<b>Recommended next step:</b> {rec.get('action', '')}", body))
     story.append(Spacer(1, 4))
-    story.append(Paragraph(f"<b>Basis:</b> {rec.get('basis','')}", muted))
+    story.append(Paragraph(f"<b>Basis:</b> {rec.get('basis', '')}", muted))
 
     # Snapshot table
     if snapshot_df is not None and not snapshot_df.empty:
@@ -372,11 +438,9 @@ def build_executive_memo_pdf(
         snap_cols = list(snap.columns)
         snap_data = [snap_cols] + snap.astype(str).values.tolist()
 
-        # Reasonable widths for A4
-        col_w = [18*mm, 18*mm, 20*mm, 20*mm, 24*mm, 22*mm, 22*mm, 18*mm, 16*mm]
-        col_w = col_w[: len(snap_cols)]  # safe if you change columns later
+        col_w = [18 * mm, 18 * mm, 20 * mm, 20 * mm, 24 * mm, 22 * mm, 22 * mm, 18 * mm, 16 * mm]
+        col_w = col_w[: len(snap_cols)]
         tt = Table(snap_data, colWidths=col_w)
-
         tt.setStyle(
             TableStyle(
                 [
@@ -398,8 +462,6 @@ def build_executive_memo_pdf(
         story.append(Paragraph("Top Results (Top 10)", h_style))
         cols = [c for c in ["name", "rating", "review_count", "distance_m", "score", "is_competitor"] if c in top_df.columns]
         tdf = top_df[cols].copy()
-
-        # Make it compact + safe for PDF
         tdf["name"] = tdf["name"].astype(str).str.slice(0, 38)
         tdf = tdf.head(10)
 
@@ -430,7 +492,6 @@ def build_executive_memo_pdf(
         )
         story.append(top_table)
 
-    # Footer note
     story.append(Spacer(1, 12))
     story.append(
         Paragraph(
@@ -441,6 +502,7 @@ def build_executive_memo_pdf(
 
     doc.build(story)
     return buf.getvalue()
+
 
 def build_multi_radius_snapshot(
     center_lat: float,
@@ -467,7 +529,6 @@ def build_multi_radius_snapshot(
         comp_share_r = float(dfr["is_competitor"].mean()) if tot and "is_competitor" in dfr.columns else 0.0
 
         opp_r = clamp01((avg_score_r / 100.0) * (1.0 - comp_share_r))
-
         pressure_r, risk_r = compute_pressure_and_risk(density_r, comp_share_r, avg_score_r)
 
         rows.append(
@@ -485,6 +546,7 @@ def build_multi_radius_snapshot(
         )
 
     return pd.DataFrame(rows)
+
 
 # -----------------------------
 # Sidebar controls
@@ -539,6 +601,27 @@ comp_share = float(df["is_competitor"].mean()) if total and "is_competitor" in d
 opp_index = clamp01((avg_score / 100.0) * (1.0 - comp_share))
 pressure_0_100, risk_0_100 = compute_pressure_and_risk(density, comp_share, avg_score)
 
+# Compute these OUTSIDE tabs so Results tab never breaks
+market_type = market_classification(opp_index)
+verdict = investment_verdict(opp_index)
+rec = opportunity_recommendation(
+    opp_index=opp_index,
+    density=density,
+    comp_share=comp_share,
+    pressure_0_100=pressure_0_100,
+    risk_0_100=risk_0_100,
+    avg_score=avg_score,
+)
+snap = build_multi_radius_snapshot(
+    center_lat=center_lat,
+    center_lon=center_lon,
+    category=category,
+    n_points=n_points,
+    seed=seed,
+    competitor_keywords_csv=competitor_keywords_csv,
+    include_competitors=show_competitors,
+)
+
 # -----------------------------
 # Header (Professional positioning)
 # -----------------------------
@@ -555,7 +638,7 @@ st.markdown(
   <h1 style="margin:0;">🧭 Location Intelligence Dashboard</h1>
 
   <div class="muted" style="margin-top:6px;">
-    Executive-ready micro-market screening for <b>site selection</b>, <b>retail strategy</b>, and <b>feasibility briefs</b>.
+    Executive-grade micro-market intelligence for <b>retail site selection</b>, <b>competitive benchmarking</b>, and <b>feasibility assessment</b>.
     Anchor: <b>{preset}</b> • Category: <b>{category}</b> • Radius: <b>{radius_m}m</b>
   </div>
 </div>
@@ -578,24 +661,39 @@ with tab_overview:
     c4.metric("Density (/km²)", f"{density:.1f}")
     c5.metric("Opportunity", f"{opp_index * 100:.0f}%", pct_label(opp_index))
 
-    # KPI row 2 (new)
+    # 2) Visual Opportunity Gauge
+    st.progress(int(round(opp_index * 100)))
+
+    # KPI row 2
     st.write("")
     k1, k2, k3 = st.columns(3)
     k1.metric("Competitive Pressure", f"{pressure_0_100:.0f}/100", pressure_label(pressure_0_100))
     k2.metric("Entry Risk", f"{risk_0_100:.0f}/100", pressure_label(risk_0_100))
     k3.metric("Competitor Share", f"{comp_share * 100:.0f}%")
 
-    # Executive Insight
+    # 1) Market Type badge
     st.write("")
-    st.markdown("### Executive Insight")
-    rec = opportunity_recommendation(
-        opp_index=opp_index,
-        density=density,
-        comp_share=comp_share,
-        pressure_0_100=pressure_0_100,
-        risk_0_100=risk_0_100,
-        avg_score=avg_score,
+    st.markdown(
+        f"""
+<div style="
+  display:inline-block;
+  padding:6px 14px;
+  border-radius:999px;
+  background:#f0f2f6;
+  font-weight:650;
+  margin-bottom:10px;
+">
+  Market Type: {market_type}
+</div>
+""",
+        unsafe_allow_html=True,
     )
+
+    # Executive Insight
+    st.markdown("### Executive Insight")
+
+    # 4) One-line investment verdict (directly under the section title)
+    st.markdown(f"**{verdict}**")
 
     st.markdown(
         f"""
@@ -628,15 +726,6 @@ with tab_overview:
     # Multi-radius snapshot
     st.write("")
     st.markdown("### Multi-radius snapshot")
-    snap = build_multi_radius_snapshot(
-        center_lat=center_lat,
-        center_lon=center_lon,
-        category=category,
-        n_points=n_points,
-        seed=seed,
-        competitor_keywords_csv=competitor_keywords_csv,
-        include_competitors=show_competitors,
-    )
     st.dataframe(snap, use_container_width=True, height=220)
 
     st.write("")
@@ -698,7 +787,6 @@ with tab_results:
     with left:
         st.subheader("Results table")
         view_cols = ["name", "category", "rating", "review_count", "distance_m", "score", "is_competitor"]
-        # robust selection
         existing = [c for c in view_cols if c in df.columns]
         st.dataframe(df[existing], use_container_width=True, height=520)
 
@@ -714,30 +802,35 @@ with tab_results:
         st.subheader("Top performers")
         if total:
             top = df.sort_values(["score", "rating", "review_count"], ascending=False).head(10)
-            pdf_bytes = build_executive_memo_pdf(
-                city=city,
-                preset=preset,
-                category=category,
-                radius_m=radius_m,
-                total=total,
-                avg_score=avg_score,
-                avg_rating=avg_rating,
-                density=density,
-                opp_index=opp_index,
-                comp_share=comp_share,
-                pressure_0_100=pressure_0_100,
-                risk_0_100=risk_0_100,
-                rec=rec,
-                snapshot_df=snap,
-                top_df=top,
-            )
 
-            st.sidebar.download_button(
-                "⬇️ Download Executive Memo (PDF)",
-                data=pdf_bytes,
-                file_name=f"executive_memo_{preset.replace(' ', '_')}_{category}_{radius_m}m.pdf",
-                mime="application/pdf",
-            )
+            if REPORTLAB_OK:
+                pdf_bytes = build_executive_memo_pdf(
+                    city=city,
+                    preset=preset,
+                    category=category,
+                    radius_m=radius_m,
+                    total=total,
+                    avg_score=avg_score,
+                    avg_rating=avg_rating,
+                    density=density,
+                    opp_index=opp_index,
+                    comp_share=comp_share,
+                    pressure_0_100=pressure_0_100,
+                    risk_0_100=risk_0_100,
+                    rec=rec,
+                    market_type=market_type,
+                    verdict=verdict,
+                    snapshot_df=snap,
+                    top_df=top,
+                )
+                st.sidebar.download_button(
+                    "⬇️ Download Executive Memo (PDF)",
+                    data=pdf_bytes,
+                    file_name=f"executive_memo_{preset.replace(' ', '_')}_{category}_{radius_m}m.pdf",
+                    mime="application/pdf",
+                )
+            else:
+                st.sidebar.info("PDF export disabled (install `reportlab` in requirements.txt).")
 
             top_cols = [c for c in ["name", "rating", "review_count", "distance_m", "score", "is_competitor"] if c in top.columns]
             st.dataframe(top[top_cols], use_container_width=True, height=350)
