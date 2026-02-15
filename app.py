@@ -1,4 +1,5 @@
 import math
+import re
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -52,6 +53,19 @@ def density_per_km2(count: int, radius_m: int) -> float:
     area_km2 = math.pi * (radius_m / 1000.0) ** 2
     return (count / area_km2) if area_km2 > 0 else 0.0
 
+def _split_keywords(text: str):
+    parts = [p.strip() for p in (text or "").split(",")]
+    return [p for p in parts if p]
+
+def _keyword_regex(keywords):
+    if not keywords:
+        return None
+    # Escape keywords, join into regex OR; word-boundary-ish matching
+    escaped = [re.escape(k) for k in keywords if k]
+    if not escaped:
+        return None
+    return re.compile("(" + "|".join(escaped) + ")", flags=re.IGNORECASE)
+
 def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     rng = np.random.default_rng(seed)
 
@@ -66,7 +80,6 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     names = [f"{category.title()} #{i+1}" for i in range(n)]
     ratings = np.clip(rng.normal(4.2, 0.35, n), 3.0, 5.0)
     reviews = np.clip(rng.normal(180, 90, n).astype(int), 5, 1200)
-    competitor_flag = rng.choice([True, False], size=n, p=[0.35, 0.65])
 
     df = pd.DataFrame(
         {
@@ -76,7 +89,6 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
             "lng": lons.round(6),
             "rating": ratings.round(1),
             "review_count": reviews,
-            "is_competitor": competitor_flag,
         }
     )
 
@@ -85,7 +97,18 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
         axis=1,
     )
 
-    # Realistic composite score (0..100)
+    # placeholder competitor flag (will be overwritten by real logic below)
+    df["is_competitor"] = False
+
+    return df
+
+def compute_score(df: pd.DataFrame, radius_m: int, seed: int = 42) -> pd.DataFrame:
+    """Compute composite demo score (0..100) using rating/reviews/distance + competitor penalty."""
+    if df.empty:
+        df["score"] = []
+        df["coverage_pct"] = []
+        return df
+
     dist_norm = (df["distance_m"] / radius_m).clip(0, 1)                 # 0 close → 1 far
     rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)               # 3..5 → 0..1
     review_norm = (np.log1p(df["review_count"]) / np.log1p(1200)).clip(0, 1)
@@ -102,33 +125,78 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
         + noise
     )
     df["score"] = np.clip(np.round(score), 0, 100).astype(int)
+    df["coverage_pct"] = np.clip((df["score"] / 100), 0, 1).round(2)
+    return df
 
-    # Coverage proxy (0..1) — used only as a lightweight signal
-    df["coverage_pct"] = np.clip((df["score"] / 100) * rng.uniform(0.7, 1.1, n), 0, 1).round(2)
+def score_label(val: float) -> str:
+    if val < 50:
+        return "🔴 Weak"
+    elif val < 70:
+        return "🟠 Moderate"
+    return "🟢 Strong"
 
-    return df.sort_values(["score", "review_count"], ascending=False).reset_index(drop=True)
+def pct_label(val01: float) -> str:
+    pct = val01 * 100
+    if pct < 30:
+        return "🔴 Low"
+    elif pct < 60:
+        return "🟠 Medium"
+    return "🟢 High"
 
-# -----------------------------
-# Header
-# -----------------------------
-st.markdown(
+def opportunity_recommendation(
+    opp_index: float,
+    density: float,
+    comp_share: float
+):
     """
-<div class="card">
-  <div>
-    <span class="badge">Analytics Dashboard</span>
-    <span class="badge">Location Intelligence</span>
-    <span class="badge">KPIs • Map • Export</span>
-  </div>
-  <h1>🧭 Location Intelligence Dashboard</h1>
-  <div class="muted">
-    Executive-ready location analytics dashboard for market saturation analysis, competitor benchmarking, and site selection strategy.
-  </div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
+    Executive-style recommendation based on:
+    - Opportunity index (0..1)
+    - Density (per km²)
+    - Competitor share (0..1)
+    """
+    pct = opp_index * 100
+    comp_pct = comp_share * 100
 
-st.write("")
+    if density > 20:
+        saturation_label = "highly saturated"
+    elif density > 10:
+        saturation_label = "moderately saturated"
+    else:
+        saturation_label = "underserved"
+
+    if pct < 30:
+        return {
+            "headline": "Limited Entry Attractiveness",
+            "text": (
+                f"The area appears {saturation_label} with strong competitive pressure "
+                f"({comp_pct:.0f}% competitor share). Entry risk is elevated. "
+                "Consider differentiation strategy, niche positioning, or alternative zones."
+            ),
+            "action": "Validate pricing strategy and evaluate adjacent underserved micro-markets.",
+            "color": "#ffe5e5",
+        }
+    elif pct < 60:
+        return {
+            "headline": "Selective Opportunity",
+            "text": (
+                f"The location shows {saturation_label} conditions with moderate competitive presence "
+                f"({comp_pct:.0f}% competitor share). Performance will depend on micro-location quality "
+                "and brand strength."
+            ),
+            "action": "Shortlist high-footfall corners and test proximity advantages.",
+            "color": "#fff4e0",
+        }
+    else:
+        return {
+            "headline": "Favorable Market Entry Conditions",
+            "text": (
+                f"The area appears {saturation_label} with manageable competitive intensity "
+                f"({comp_pct:.0f}% competitor share). Market signals support expansion "
+                "or new location feasibility."
+            ),
+            "action": "Proceed with site due diligence and rental benchmarking.",
+            "color": "#e6f4ea",
+        }
 
 # -----------------------------
 # Sidebar controls
@@ -145,6 +213,16 @@ preset = st.sidebar.selectbox(
 category = st.sidebar.selectbox("Category", ["pharmacy", "restaurant", "hospital", "school", "grocery"])
 radius_m = st.sidebar.selectbox("Radius (meters)", [300, 500, 1000, 1500, 2000], index=2)
 n_points = st.sidebar.slider("Number of results", 10, 120, 45, step=5)
+
+# NEW (keeps view, but makes competitor share meaningful)
+st.sidebar.divider()
+st.sidebar.subheader("Competitor Definition (optional)")
+
+competitor_keywords_text = st.sidebar.text_input(
+    "Competitor keywords (comma-separated)",
+    value="",
+    help="Example: CVS, Walgreens, Starbucks. If empty, competitor flags are random demo labels.",
+)
 
 show_competitors = st.sidebar.checkbox("Include competitors", value=True)
 
@@ -167,91 +245,57 @@ seed = 42  # stable demo runs
 # -----------------------------
 df = make_demo_points(center_lat, center_lon, category, radius_m, n_points, seed=seed)
 
+# Competitor labeling: keyword-based if provided, otherwise demo distribution
+kw = _split_keywords(competitor_keywords_text)
+rx = _keyword_regex(kw)
+
+if rx is not None:
+    df["is_competitor"] = df["name"].astype(str).apply(lambda s: bool(rx.search(s)))
+else:
+    rng = np.random.default_rng(seed + 123)
+    df["is_competitor"] = rng.choice([True, False], size=len(df), p=[0.35, 0.65])
+
+# Apply competitor filter (keeps your existing view/behavior)
 if not show_competitors:
     df = df[df["is_competitor"] == False].reset_index(drop=True)
+
+# Compute score AFTER competitor assignment (so penalty is meaningful)
+df = compute_score(df, radius_m=radius_m, seed=seed)
+
+# Sort like your original view
+df = df.sort_values(["score", "review_count"], ascending=False).reset_index(drop=True)
 
 total = len(df)
 avg_score = float(df["score"].mean()) if total else 0.0
 avg_rating = float(df["rating"].mean()) if total else 0.0
 density = density_per_km2(total, radius_m)
-def score_label(val: float) -> str:
-    if val < 50:
-        return "🔴 Weak"
-    elif val < 70:
-        return "🟠 Moderate"
-    return "🟢 Strong"
-
-def pct_label(val01: float) -> str:
-    # val01 is 0..1
-    pct = val01 * 100
-    if pct < 30:
-        return "🔴 Low"
-    elif pct < 60:
-        return "🟠 Medium"
-    return "🟢 High"
-def opportunity_recommendation(
-    opp_index: float,
-    density: float,
-    comp_share: float
-):
-    """
-    Generates executive-style recommendation based on:
-    - Opportunity index
-    - Market density
-    - Competitor share
-    """
-
-    pct = opp_index * 100
-    comp_pct = comp_share * 100
-
-    # --- Market classification ---
-    if density > 20:
-        saturation_label = "highly saturated"
-    elif density > 10:
-        saturation_label = "moderately saturated"
-    else:
-        saturation_label = "underserved"
-
-    # --- Opportunity logic ---
-    if pct < 30:
-        return {
-            "headline": "Limited Entry Attractiveness",
-            "text": (
-                f"The area appears {saturation_label} with strong competitive pressure "
-                f"({comp_pct:.0f}% competitor share). Entry risk is elevated. "
-                "Consider differentiation strategy, niche positioning, or alternative zones."
-            ),
-            "action": "Validate pricing strategy and evaluate adjacent underserved micro-markets.",
-            "color": "#ffe5e5"  # light red
-        }
-
-    elif pct < 60:
-        return {
-            "headline": "Selective Opportunity",
-            "text": (
-                f"The location shows {saturation_label} conditions with moderate competitive presence "
-                f"({comp_pct:.0f}% competitor share). Performance will depend on micro-location quality "
-                "and brand strength."
-            ),
-            "action": "Shortlist high-footfall corners and test proximity advantages.",
-            "color": "#fff4e0"  # light orange
-        }
-
-    else:
-        return {
-            "headline": "Favorable Market Entry Conditions",
-            "text": (
-                f"The area appears {saturation_label} with manageable competitive intensity "
-                f"({comp_pct:.0f}% competitor share). Market signals support expansion "
-                "or new location feasibility."
-            ),
-            "action": "Proceed with site due diligence and rental benchmarking.",
-            "color": "#e6f4ea"  # light green
-        }
 
 comp_share = float(df["is_competitor"].mean()) if total else 0.0
 opp_index = (avg_score / 100.0) * (1.0 - comp_share)
 opp_index = max(0.0, min(1.0, opp_index))
+
+# -----------------------------
+# Header (keep existing view; improved positioning)
+# -----------------------------
+st.markdown(
+    f"""
+<div class="card">
+  <div>
+    <span class="badge">Decision Support</span>
+    <span class="badge">Site Selection</span>
+    <span class="badge">Market Saturation</span>
+    <span class="badge">Competitor Pressure</span>
+  </div>
+  <h1>🧭 Location Intelligence Dashboard</h1>
+  <div class="muted">
+    Executive-ready micro-market screening for <b>site selection</b>, <b>retail strategy</b>, and <b>feasibility briefs</b>.
+    <span class="small">Anchor: <b>{preset}</b> • Category: <b>{category}</b> • Radius: <b>{radius_m}m</b></span>
+  </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+st.write("")
 
 # -----------------------------
 # Tabs
@@ -272,30 +316,34 @@ with tab_overview:
     rec = opportunity_recommendation(
         opp_index=opp_index,
         density=density,
-        comp_share=comp_share
+        comp_share=comp_share,
     )
 
     st.markdown(
         f"""
-    <div style="
-        border-radius:16px;
-        padding:16px;
-        background:{rec['color']};
-        border:1px solid rgba(0,0,0,0.05);
-    ">
-      <div style="font-weight:800; font-size:1.05rem; margin-bottom:6px;">
-        {rec['headline']}
-      </div>
+<div style="
+    border-radius:16px;
+    padding:16px;
+    background:{rec['color']};
+    border:1px solid rgba(0,0,0,0.05);
+">
+  <div style="font-weight:800; font-size:1.05rem; margin-bottom:6px;">
+    {rec['headline']}
+  </div>
 
-      <div style="line-height:1.6; margin-bottom:10px;">
-        {rec['text']}
-      </div>
+  <div style="line-height:1.6; margin-bottom:10px;">
+    {rec['text']}
+  </div>
 
-      <div class="muted small" style="line-height:1.6;">
-        <b>Recommended next step:</b> {rec['action']}
-      </div>
-    </div>
-    """,
+  <div class="muted small" style="line-height:1.6; margin-bottom:6px;">
+    <b>Recommended next step:</b> {rec['action']}
+  </div>
+
+  <div class="muted small" style="line-height:1.6;">
+    Basis: Opportunity <b>{opp_index*100:.0f}%</b> • Avg score <b>{avg_score:.1f}</b> • Competitor share <b>{comp_share*100:.0f}%</b> • Density <b>{density:.1f}/km²</b>
+  </div>
+</div>
+""",
         unsafe_allow_html=True,
     )
 
@@ -317,7 +365,8 @@ with tab_overview:
         st.markdown(
             """
 - Change **Category** and **Radius** in the sidebar  
-- Toggle **Include competitors** to see impact on KPIs  
+- (Optional) add **Competitor keywords** to define competition  
+- Toggle **Include competitors** to see KPI impact  
 - Use **Download CSV** for reporting-ready output
 """
         )
@@ -387,58 +436,21 @@ In production, the same dashboard can be connected to a live pipeline that:
 """
     )
 
-    # -----------------------------
-    # Header (Professional positioning)
-    # -----------------------------
+    st.markdown("### Interpretation notes")
     st.markdown(
-        f"""
-    <div class="card">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">
-        <div>
-          <div style="margin-bottom:8px;">
-            <span class="badge">Decision Support</span>
-            <span class="badge">Site Selection</span>
-            <span class="badge">Market Saturation</span>
-            <span class="badge">Competitor Pressure</span>
-          </div>
-
-          <h1 style="margin:0;">🧭 Business Location Intelligence Dashboard</h1>
-
-          <div class="muted" style="margin-top:6px;">
-            Evaluate a micro-market around a chosen anchor: <b>density</b>, <b>quality signals</b>, <b>competitive pressure</b>, and an <b>opportunity index</b> — exportable for briefs and investment memos.
-          </div>
-
-          <div class="muted small" style="margin-top:10px;">
-            <b>Current study:</b> {preset} &nbsp;•&nbsp; <b>Category:</b> {category} &nbsp;•&nbsp; <b>Radius:</b> {radius_m}m
-          </div>
-        </div>
-
-        <div style="
-          min-width: 260px;
-          border: 1px solid rgba(49, 51, 63, 0.12);
-          border-radius: 14px;
-          padding: 12px 14px;
-          background: rgba(255,255,255,0.02);
-        ">
-          <div class="muted" style="font-weight:600; margin-bottom:6px;">Executive Summary</div>
-          <div class="small" style="line-height:1.55;">
-            <div><b>Results:</b> {total}</div>
-            <div><b>Avg Score:</b> {avg_score:.1f}/100</div>
-            <div><b>Density:</b> {density:.1f}/km²</div>
-            <div><b>Opportunity:</b> {opp_index * 100:.0f}%</div>
-          </div>
-        </div>
-      </div>
-
-      <div style="margin-top:12px;" class="muted small">
-        <span style="opacity:0.85;">
-          Note: Demo-mode signals are illustrative. In production, this dashboard can connect to live POI sources (e.g., OSM/Overpass, Google data via licensed providers) and your competitor definitions.
-        </span>
-      </div>
-    </div>
-    """,
-        unsafe_allow_html=True,
+        """
+- **Score** is a composite signal from proximity, quality (rating), demand proxy (reviews), and competitor labeling.  
+- **Density** is results divided by the circular area within the selected radius.  
+- **Opportunity** combines average score and competitor share as a lightweight screening proxy.  
+"""
     )
-    st.write("")
+
+    st.markdown("### Competitor definition")
+    st.markdown(
+        """
+- If you provide **Competitor keywords**, entries whose **name matches** those keywords are labeled as competitors.  
+- If you leave it blank, competitors are **demo-labeled** to simulate market pressure.  
+"""
+    )
 
 st.caption("Note: Data shown is sample-formatted for demonstration. The dashboard can be connected to a live backend when needed.")
