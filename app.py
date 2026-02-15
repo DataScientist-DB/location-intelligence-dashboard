@@ -187,40 +187,46 @@ with tab1:
 
     st.map(df.rename(columns={"lat":"latitude","lng":"longitude"})[["latitude","longitude"]])
 
-    st.subheader("Radius Sensitivity (same POIs, filtered by radius)")
+    st.subheader("Radius Sensitivity Analysis")
 
     radii = [300, 500, 1000, 1500, 2000]
 
-    # 1) Build ONE dataset at max radius using the same number of points as your dashboard
+    # Generate ONE base dataset at max radius
     max_r = max(radii)
-    base = make_demo_points(center_lat, center_lon, category, max_r, n_points)
+    base_df = make_demo_points(center_lat, center_lon, category, max_r, n_points)
 
     if not show_competitors:
-        base = base[base["is_competitor"] == False].reset_index(drop=True)
+        base_df = base_df[base_df["is_competitor"] == False]
 
     rows = []
+
     for r in radii:
-        sub = base[base["distance_m"] <= r].copy()
+        subset = base_df[base_df["distance_m"] <= r]
 
-        total_r = len(sub)
-        avg_score_r = float(sub["score"].mean()) if total_r else 0.0
-        avg_rating_r = float(sub["rating"].mean()) if total_r else 0.0
-        comp_share_r = float(sub["is_competitor"].mean()) if total_r else 0.0
-
+        total_r = len(subset)
+        avg_score_r = subset["score"].mean() if total_r else 0
+        avg_rating_r = subset["rating"].mean() if total_r else 0
+        comp_share_r = subset["is_competitor"].mean() if total_r else 0
         density_r = density_per_km2(total_r, r)
-        opp_index_r = max(0.0, min(1.0, (avg_score_r / 100.0) * (1.0 - comp_share_r)))
+
+        opp_index_r = (avg_score_r / 100) * (1 - comp_share_r)
 
         rows.append({
-            "radius_m": r,
-            "results_in_radius": total_r,
-            "density_per_km2": round(density_r, 2),
-            "avg_rating": round(avg_rating_r, 2),
-            "avg_score": round(avg_score_r, 1),
-            "competitor_share": round(comp_share_r, 3),
-            "opportunity_%": round(opp_index_r * 100, 1),
+            "Radius (m)": r,
+            "Results": total_r,
+            "Density/km²": round(density_r, 2),
+            "Avg Rating": round(avg_rating_r, 2),
+            "Avg Score": round(avg_score_r, 1),
+            "Competitor Share": round(comp_share_r, 2),
+            "Opportunity %": round(opp_index_r * 100, 1)
         })
 
-    st.dataframe(pd.DataFrame(rows), use_container_width=True)
+    radius_df = pd.DataFrame(rows)
+    st.dataframe(radius_df, use_container_width=True)
+
+    # Optional clean line chart
+    chart_df = radius_df.set_index("Radius (m)")["Opportunity %"]
+    st.line_chart(chart_df)
 
 with tab2:
     st.dataframe(df, use_container_width=True)
