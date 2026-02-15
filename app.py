@@ -2,18 +2,17 @@ import math
 import numpy as np
 import pandas as pd
 import streamlit as st
+import requests
 
 st.set_page_config(page_title="Location Intelligence Dashboard", layout="wide")
 
 # -----------------------------
-# Light styling (safe + clean)
+# Styling
 # -----------------------------
-st.markdown(
-    """
+st.markdown("""
 <style>
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
 h1, h2, h3 { margin-bottom: 0.3rem; }
-
 .card {
   border: 1px solid rgba(49, 51, 63, 0.12);
   border-radius: 16px;
@@ -31,126 +30,112 @@ h1, h2, h3 { margin-bottom: 0.3rem; }
 }
 .small { font-size: 0.9rem; }
 </style>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
 # -----------------------------
-# Helpers
+# Distance Functions
 # -----------------------------
-def haversine_km(lat1, lon1, lat2, lon2) -> float:
-    """Great-circle distance between two points (km)."""
+def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371.0
     p1 = math.radians(lat1)
     p2 = math.radians(lat2)
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlon / 2) ** 2
+    a = math.sin(dlat/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dlon/2)**2
     return 2 * R * math.asin(math.sqrt(a))
 
-def density_per_km2(count: int, radius_m: int) -> float:
-    area_km2 = math.pi * (radius_m / 1000.0) ** 2
-    return (count / area_km2) if area_km2 > 0 else 0.0
+def distance_m(lat1, lon1, lat2, lon2):
+    return int(haversine_km(lat1, lon1, lat2, lon2) * 1000)
 
-def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
-    rng = np.random.default_rng(seed)
+def density_per_km2(count, radius_m):
+    area = math.pi * (radius_m/1000)**2
+    return count / area if area > 0 else 0
 
-    # Spread points in a circle around the center
-    r_deg = (radius_m / 1000.0) / 111.0  # approx degrees per km
-    angles = rng.uniform(0, 2 * np.pi, n)
+# -----------------------------
+# Demo Data Generator
+# -----------------------------
+def make_demo_points(center_lat, center_lon, category, radius_m, n):
+    rng = np.random.default_rng(42)
+    r_deg = (radius_m/1000)/111
+    angles = rng.uniform(0, 2*np.pi, n)
     radii = r_deg * np.sqrt(rng.uniform(0, 1, n))
 
-    lats = center_lat + radii * np.cos(angles)
-    lons = center_lon + radii * np.sin(angles) / np.cos(np.deg2rad(center_lat))
+    lats = center_lat + radii*np.cos(angles)
+    lons = center_lon + radii*np.sin(angles)/np.cos(np.deg2rad(center_lat))
 
-    names = [f"{category.title()} #{i+1}" for i in range(n)]
-    ratings = np.clip(rng.normal(4.2, 0.35, n), 3.0, 5.0)
-    reviews = np.clip(rng.normal(180, 90, n).astype(int), 5, 1200)
-    competitor_flag = rng.choice([True, False], size=n, p=[0.35, 0.65])
-
-    df = pd.DataFrame(
-        {
-            "name": names,
-            "category": category,
-            "lat": lats.round(6),
-            "lng": lons.round(6),
-            "rating": ratings.round(1),
-            "review_count": reviews,
-            "is_competitor": competitor_flag,
-        }
-    )
+    df = pd.DataFrame({
+        "name": [f"{category.title()} #{i+1}" for i in range(n)],
+        "category": category,
+        "lat": lats.round(6),
+        "lng": lons.round(6),
+        "rating": np.clip(rng.normal(4.2,0.3,n),3,5).round(1),
+        "review_count": np.clip(rng.normal(200,80,n).astype(int),5,1200),
+        "is_competitor": rng.choice([True,False],size=n,p=[0.35,0.65])
+    })
 
     df["distance_m"] = df.apply(
-        lambda r: int(haversine_km(center_lat, center_lon, r["lat"], r["lng"]) * 1000),
-        axis=1,
+        lambda r: distance_m(center_lat,center_lon,r["lat"],r["lng"]), axis=1
     )
-
-    # Realistic composite score (0..100)
-    dist_norm = (df["distance_m"] / radius_m).clip(0, 1)                 # 0 close → 1 far
-    rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)               # 3..5 → 0..1
-    review_norm = (np.log1p(df["review_count"]) / np.log1p(1200)).clip(0, 1)
-
-    rng2 = np.random.default_rng(seed + 999)
-    noise = rng2.normal(0, 4.0, len(df))  # add a little realism
 
     score = (
         15
-        + 45 * rating_norm
-        + 18 * review_norm
-        + 22 * (1 - dist_norm)
-        - 7 * df["is_competitor"].astype(int)
-        + noise
+        + 45*((df["rating"]-3)/2)
+        + 18*(np.log1p(df["review_count"])/np.log1p(1200))
+        + 22*(1-df["distance_m"]/radius_m)
+        - 7*df["is_competitor"].astype(int)
     )
-    df["score"] = np.clip(np.round(score), 0, 100).astype(int)
 
-    # Coverage proxy (0..1) — used only as a lightweight signal
-    df["coverage_pct"] = np.clip((df["score"] / 100) * rng.uniform(0.7, 1.1, n), 0, 1).round(2)
+    df["score"] = np.clip(score,0,100).round().astype(int)
+    df["coverage_pct"] = (df["score"]/100).round(2)
 
-    return df.sort_values(["score", "review_count"], ascending=False).reset_index(drop=True)
+    return df.sort_values("score",ascending=False).reset_index(drop=True)
+
+# -----------------------------
+# Overpass Block (Template)
+# -----------------------------
+def build_overpass_query(lat, lon, radius_m, category):
+    tag_map = {
+        "restaurant": 'node["amenity"="restaurant"]',
+        "pharmacy": 'node["amenity"="pharmacy"]',
+        "hospital": 'node["amenity"="hospital"]',
+        "school": 'node["amenity"="school"]',
+        "grocery": 'node["shop"="supermarket"]'
+    }
+    selector = tag_map.get(category,'node["amenity"]')
+
+    return f"""
+[out:json][timeout:25];
+(
+ {selector}(around:{radius_m},{lat},{lon});
+);
+out center tags;
+"""
 
 # -----------------------------
 # Header
 # -----------------------------
-st.markdown(
-    """
+st.markdown("""
 <div class="card">
-  <div>
-    <span class="badge">Analytics Dashboard</span>
-    <span class="badge">Location Intelligence</span>
-    <span class="badge">KPIs • Map • Export</span>
-  </div>
-  <h1>🧭 Location Intelligence Dashboard</h1>
-  <div class="muted">
-    Executive-ready location analytics dashboard for market saturation analysis, competitor benchmarking, and site selection strategy.
-  </div>
+<span class="badge">Analytics Dashboard</span>
+<span class="badge">Location Intelligence</span>
+<h1>🧭 Location Intelligence Dashboard</h1>
+<div class="muted">
+Executive-ready analytics for market saturation and opportunity scoring.
 </div>
-""",
-    unsafe_allow_html=True,
-)
+</div>
+""", unsafe_allow_html=True)
 
 st.write("")
 
 # -----------------------------
-# Sidebar controls
+# Sidebar
 # -----------------------------
-st.sidebar.header("Analysis Parameters")
-
-city = st.sidebar.text_input("City / Area", "Los Angeles, CA")
+st.sidebar.header("Parameters")
 
 preset = st.sidebar.selectbox(
     "Area",
-    ["Los Angeles (Downtown)", "Washington, DC", "New York (Midtown)", "Berlin (Mitte)"],
+    ["Los Angeles (Downtown)", "Washington, DC", "New York (Midtown)", "Berlin (Mitte)"]
 )
-
-category = st.sidebar.selectbox("Category", ["pharmacy", "restaurant", "hospital", "school", "grocery"])
-radius_m = st.sidebar.selectbox("Radius (meters)", [300, 500, 1000, 1500, 2000], index=2)
-n_points = st.sidebar.slider("Number of results", 10, 120, 45, step=5)
-
-show_competitors = st.sidebar.checkbox("Include competitors", value=True)
-
-st.sidebar.divider()
-st.sidebar.subheader("Export")
-export_name = st.sidebar.text_input("CSV file name", "location_intelligence_export.csv")
 
 centers = {
     "Los Angeles (Downtown)": (34.052235, -118.243683),
@@ -158,194 +143,79 @@ centers = {
     "New York (Midtown)": (40.754932, -73.984016),
     "Berlin (Mitte)": (52.520008, 13.404954),
 }
+
 center_lat, center_lon = centers[preset]
 
-seed = 42  # stable demo runs
+category = st.sidebar.selectbox("Category",
+    ["restaurant","pharmacy","hospital","school","grocery"]
+)
+
+radius_m = st.sidebar.selectbox("Radius (meters)", [300,500,1000,1500,2000], index=2)
+n_points = st.sidebar.slider("Number of results",10,120,50,5)
+show_competitors = st.sidebar.checkbox("Include competitors",True)
+
+st.sidebar.divider()
+export_name = st.sidebar.text_input("CSV file name","location_intelligence_export.csv")
 
 # -----------------------------
 # Data
 # -----------------------------
-df = make_demo_points(center_lat, center_lon, category, radius_m, n_points, seed=seed)
+df = make_demo_points(center_lat,center_lon,category,radius_m,n_points)
 
 if not show_competitors:
-    df = df[df["is_competitor"] == False].reset_index(drop=True)
+    df = df[df["is_competitor"]==False]
 
 total = len(df)
-avg_score = float(df["score"].mean()) if total else 0.0
-avg_rating = float(df["rating"].mean()) if total else 0.0
-density = density_per_km2(total, radius_m)
-def score_label(val: float) -> str:
-    if val < 50:
-        return "🔴 Weak"
-    elif val < 70:
-        return "🟠 Moderate"
-    return "🟢 Strong"
-
-def pct_label(val01: float) -> str:
-    # val01 is 0..1
-    pct = val01 * 100
-    if pct < 30:
-        return "🔴 Low"
-    elif pct < 60:
-        return "🟠 Medium"
-    return "🟢 High"
-def opportunity_recommendation(opp_index: float):
-    pct = opp_index * 100
-
-    if pct < 30:
-        return {
-            "text": "Market appears saturated. Consider differentiation strategy or alternative zones.",
-            "color": "#ffe5e5"  # light red
-        }
-    elif pct < 60:
-        return {
-            "text": "Moderate opportunity. Target micro-locations with stronger quality or proximity advantages.",
-            "color": "#fff4e0"  # light orange
-        }
-    else:
-        return {
-            "text": "Strong opportunity. Area shows favorable balance between quality signals and competition.",
-            "color": "#e6f4ea"  # light green
-        }
-
-comp_share = float(df["is_competitor"].mean()) if total else 0.0
-opp_index = (avg_score / 100.0) * (1.0 - comp_share)
-opp_index = max(0.0, min(1.0, opp_index))
+avg_score = df["score"].mean()
+avg_rating = df["rating"].mean()
+density = density_per_km2(total,radius_m)
+comp_share = df["is_competitor"].mean()
+opp_index = (avg_score/100)*(1-comp_share)
 
 # -----------------------------
 # Tabs
 # -----------------------------
-tab_overview, tab_results, tab_method = st.tabs(["📌 Overview", "📋 Results", "🧠 Method"])
+tab1, tab2, tab3 = st.tabs(["📌 Overview","📋 Results","🧠 Method"])
 
-with tab_overview:
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Results", total)
-    c2.metric("Avg Score", f"{avg_score:.1f}/100", score_label(avg_score))
-    c3.metric("Avg Rating", f"{avg_rating:.2f}⭐")
-    c4.metric("Density", f"{density:.1f}/km²")
-    c5.metric("Opportunity", f"{opp_index * 100:.0f}%", pct_label(opp_index))
+with tab1:
+    c1,c2,c3,c4,c5 = st.columns(5)
+    c1.metric("Results",total)
+    c2.metric("Avg Score",f"{avg_score:.1f}/100")
+    c3.metric("Avg Rating",f"{avg_rating:.2f}⭐")
+    c4.metric("Density",f"{density:.1f}/km²")
+    c5.metric("Opportunity",f"{opp_index*100:.0f}%")
 
-    st.write("")
-    rec = opportunity_recommendation(opp_index)
+    st.map(df.rename(columns={"lat":"latitude","lng":"longitude"})[["latitude","longitude"]])
 
-    st.markdown(
-        f"""
-    <div style="
-        border-radius:16px;
-        padding:16px;
-        background:{rec['color']};
-        border:1px solid rgba(0,0,0,0.05);
-    ">
-    <b>Executive Insight:</b><br><br>
-    {rec['text']}
-    </div>
-    """,
-        unsafe_allow_html=True,
-    )
+    st.subheader("Radius Sensitivity")
+    radii = [300,500,1000,1500,2000]
+    rows=[]
+    for r in radii:
+        tmp = make_demo_points(center_lat,center_lon,category,r,30)
+        rows.append({
+            "radius_m": r,
+            "results": len(tmp),
+            "avg_score": round(tmp["score"].mean(),1),
+            "density_per_km2": round(density_per_km2(len(tmp),r),1)
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
-    st.write("")
-    left, right = st.columns([1.15, 1])
+with tab2:
+    st.dataframe(df, use_container_width=True)
+    st.download_button("⬇️ Download CSV",
+                       df.to_csv(index=False).encode("utf-8"),
+                       file_name=export_name,
+                       mime="text/csv")
 
-    with left:
-        st.markdown("### Business value")
-        st.markdown(
-            """
-- **Market saturation signal:** density + competitor share to gauge crowded vs underserved areas  
-- **Benchmarking:** compare categories, radii, and zones consistently  
-- **Decision support:** export-ready reporting for **site selection**, **retail strategy**, and **investment memos**  
-- **Stakeholder-friendly:** KPIs + map + downloadable dataset for quick review
-"""
-        )
+with tab3:
+    st.markdown("""
+This dashboard demonstrates a structured location intelligence pipeline.
 
-        st.markdown("### Quick actions")
-        st.markdown(
-            """
-- Change **Category** and **Radius** in the sidebar  
-- Toggle **Include competitors** to see impact on KPIs  
-- Use **Download CSV** for reporting-ready output
-"""
-        )
+In production:
+- Data is fetched via Overpass API
+- Distance calculations use Haversine
+- Scores combine proximity, quality, demand proxy, and competitor signals
+- Outputs are export-ready for planning and strategy
+""")
 
-    with right:
-        st.markdown("### Map preview")
-        map_df = df[["lat", "lng"]].rename(columns={"lat": "latitude", "lng": "longitude"})
-        st.map(map_df, zoom=12)
-        st.markdown(
-            f"<div class='muted small'>Anchor: {preset} • Radius: {radius_m}m • City label: {city}</div>",
-            unsafe_allow_html=True,
-        )
-
-    st.write("")
-    st.markdown("### Score distribution")
-    hist = df[["score"]].copy()
-    hist["bucket"] = (hist["score"] // 10) * 10
-    dist = hist.groupby("bucket").size().reset_index(name="count").sort_values("bucket").set_index("bucket")
-    st.bar_chart(dist)
-
-with tab_results:
-    left, right = st.columns([1.35, 1])
-
-    with left:
-        st.subheader("Results table")
-        view_cols = ["name", "category", "rating", "review_count", "distance_m", "score", "is_competitor"]
-        st.dataframe(df[view_cols], use_container_width=True, height=520)
-
-        csv_bytes = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇️ Download CSV",
-            data=csv_bytes,
-            file_name=export_name,
-            mime="text/csv",
-        )
-
-    with right:
-        st.subheader("Top performers")
-        top = df.sort_values(["score", "rating", "review_count"], ascending=False).head(10)
-        st.dataframe(
-            top[["name", "rating", "review_count", "distance_m", "score", "is_competitor"]],
-            use_container_width=True,
-            height=350,
-        )
-
-        st.subheader("Competitor share")
-        comp = pd.DataFrame(
-            {
-                "segment": ["Competitors", "Non-competitors"],
-                "count": [int(df["is_competitor"].sum()), int((~df["is_competitor"]).sum())],
-            }
-        ).set_index("segment")
-        st.bar_chart(comp)
-
-with tab_method:
-    st.markdown("### What this dashboard represents")
-    st.markdown(
-        """
-This dashboard illustrates the structure and reporting format of an automated location analytics pipeline.  
-Data shown here is **sample-formatted for demonstration purposes**.
-
-In production, the same dashboard can be connected to a live pipeline that:
-- Collects POIs from selected sources
-- Cleans & deduplicates entities
-- Applies scoring rules (distance, quality signals, category relevance, competitor labeling)
-- Outputs structured datasets suitable for analytics and decision-making
-"""
-    )
-
-    st.markdown("### Interpretation notes")
-    st.markdown(
-        """
-- **Score** is a composite signal from proximity, quality (rating), demand proxy (reviews), and competitor labeling.  
-- **Density** is the number of results divided by the circular area within the selected radius.  
-- **Opportunity** is a lightweight proxy combining average score and competitor share.  
-"""
-    )
-
-    st.markdown("### Compliance note")
-    st.markdown(
-        """
-This page includes **no external contact information** and is intended for portfolio demonstration.
-"""
-    )
-
-st.write("")
-st.caption("Note: Data shown is sample-formatted for demonstration. The dashboard can be connected to a live backend when needed.")
+st.caption("Demo data. Production version can connect to live backend.")
