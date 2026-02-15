@@ -189,22 +189,63 @@ def pct_label(val01: float) -> str:
     elif pct < 60:
         return "🟠 Medium"
     return "🟢 High"
-def opportunity_recommendation(opp_index: float):
-    pct = opp_index * 100
+def opportunity_recommendation(
+    opp_index: float,
+    density: float,
+    comp_share: float
+):
+    """
+    Generates executive-style recommendation based on:
+    - Opportunity index
+    - Market density
+    - Competitor share
+    """
 
+    pct = opp_index * 100
+    comp_pct = comp_share * 100
+
+    # --- Market classification ---
+    if density > 20:
+        saturation_label = "highly saturated"
+    elif density > 10:
+        saturation_label = "moderately saturated"
+    else:
+        saturation_label = "underserved"
+
+    # --- Opportunity logic ---
     if pct < 30:
         return {
-            "text": "Market appears saturated. Consider differentiation strategy or alternative zones.",
+            "headline": "Limited Entry Attractiveness",
+            "text": (
+                f"The area appears {saturation_label} with strong competitive pressure "
+                f"({comp_pct:.0f}% competitor share). Entry risk is elevated. "
+                "Consider differentiation strategy, niche positioning, or alternative zones."
+            ),
+            "action": "Validate pricing strategy and evaluate adjacent underserved micro-markets.",
             "color": "#ffe5e5"  # light red
         }
+
     elif pct < 60:
         return {
-            "text": "Moderate opportunity. Target micro-locations with stronger quality or proximity advantages.",
+            "headline": "Selective Opportunity",
+            "text": (
+                f"The location shows {saturation_label} conditions with moderate competitive presence "
+                f"({comp_pct:.0f}% competitor share). Performance will depend on micro-location quality "
+                "and brand strength."
+            ),
+            "action": "Shortlist high-footfall corners and test proximity advantages.",
             "color": "#fff4e0"  # light orange
         }
+
     else:
         return {
-            "text": "Strong opportunity. Area shows favorable balance between quality signals and competition.",
+            "headline": "Favorable Market Entry Conditions",
+            "text": (
+                f"The area appears {saturation_label} with manageable competitive intensity "
+                f"({comp_pct:.0f}% competitor share). Market signals support expansion "
+                "or new location feasibility."
+            ),
+            "action": "Proceed with site due diligence and rental benchmarking.",
             "color": "#e6f4ea"  # light green
         }
 
@@ -228,11 +269,31 @@ with tab_overview:
     st.write("")
     st.markdown("### Executive Insight")
 
+    rec = opportunity_recommendation(
+        opp_index=opp_index,
+        density=density,
+        comp_share=comp_share
+    )
+
     st.markdown(
         f"""
-    <div class="card">
-    <b>Recommendation:</b><br>
-    {opportunity_recommendation(opp_index)}
+    <div style="
+        border-radius:16px;
+        padding:16px;
+        background:{rec['color']};
+        border:1px solid rgba(0,0,0,0.05);
+    ">
+      <div style="font-weight:800; font-size:1.05rem; margin-bottom:6px;">
+        {rec['headline']}
+      </div>
+
+      <div style="line-height:1.6; margin-bottom:10px;">
+        {rec['text']}
+      </div>
+
+      <div class="muted small" style="line-height:1.6;">
+        <b>Recommended next step:</b> {rec['action']}
+      </div>
     </div>
     """,
         unsafe_allow_html=True,
