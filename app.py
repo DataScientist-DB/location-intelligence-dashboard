@@ -142,6 +142,41 @@ def pct_label(val01: float) -> str:
     elif pct < 60:
         return "🟠 Medium"
     return "🟢 High"
+def clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+def band_label_01(val01: float, low: float = 0.33, mid: float = 0.66) -> str:
+    """
+    Generic label for 0..1 signals.
+    """
+    if val01 < low:
+        return "🟢 Low"
+    elif val01 < mid:
+        return "🟠 Medium"
+    return "🔴 High"
+
+def competitive_pressure_index(density: float, comp_share: float, density_ref: float = 30.0) -> float:
+    """
+    Competitive Pressure Index (0..1):
+    - density_ref is a "high density" reference point (per km²).
+    - comp_share is 0..1 (share of listings flagged as competitors).
+
+    Pressure rises with both density and competitor share.
+    """
+    dens01 = clamp01(density / density_ref)          # 0..1
+    comp01 = clamp01(comp_share)                      # 0..1
+    pressure01 = 0.60 * dens01 + 0.40 * comp01        # weighted blend
+    return clamp01(pressure01)
+
+def entry_risk_index(opp_index: float, pressure01: float) -> float:
+    """
+    Entry Risk Indicator (0..1):
+    - higher risk when opportunity is low and competitive pressure is high
+    """
+    opp01 = clamp01(opp_index)
+    pres01 = clamp01(pressure01)
+    risk01 = 0.55 * (1.0 - opp01) + 0.45 * pres01
+    return clamp01(risk01)
 
 def opportunity_recommendation(
     opp_index: float,
@@ -307,6 +342,15 @@ density = density_per_km2(total, radius_m)
 comp_share = float(df["is_competitor"].mean()) if total else 0.0
 opp_index = (avg_score / 100.0) * (1.0 - comp_share)
 opp_index = max(0.0, min(1.0, opp_index))
+# --- NEW: Competitive pressure + entry risk
+pressure01 = competitive_pressure_index(density=density, comp_share=comp_share, density_ref=30.0)
+risk01 = entry_risk_index(opp_index=opp_index, pressure01=pressure01)
+
+pressure_score = int(round(pressure01 * 100))
+risk_score = int(round(risk01 * 100))
+
+pressure_label = band_label_01(pressure01)  # Low/Medium/High (pressure)
+risk_label = band_label_01(risk01)          # Low/Medium/High (risk)
 
 # -----------------------------
 # Header (keep existing view; improved positioning)
@@ -344,6 +388,48 @@ with tab_overview:
     c4.metric("Density (/km²)", f"{density:.1f}")
 
     c5.metric("Opportunity", f"{opp_index * 100:.0f}%", pct_label(opp_index))
+    st.write("")
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Competitive Pressure", f"{pressure_score}/100", pressure_label)
+    k2.metric("Entry Risk", f"{risk_score}/100", risk_label)
+    k3.metric("Competitor Share", f"{comp_share * 100:.0f}%")
+
+    st.write("")
+    st.markdown("### Multi-radius snapshot")
+
+    snapshot_radii = [300, 500, 1000, 1500, 2000]
+    rows = []
+    for rr in snapshot_radii:
+        dfr = make_demo_points(center_lat, center_lon, category, rr, n_points, seed=seed)
+        if not show_competitors:
+            dfr = dfr[dfr["is_competitor"] == False].reset_index(drop=True)
+
+        tot_r = len(dfr)
+        avg_score_r = float(dfr["score"].mean()) if tot_r else 0.0
+        avg_rating_r = float(dfr["rating"].mean()) if tot_r else 0.0
+        dens_r = density_per_km2(tot_r, rr)
+        comp_share_r = float(dfr["is_competitor"].mean()) if tot_r else 0.0
+
+        opp_r = (avg_score_r / 100.0) * (1.0 - comp_share_r)
+        opp_r = clamp01(opp_r)
+
+        pres_r = competitive_pressure_index(density=dens_r, comp_share=comp_share_r, density_ref=30.0)
+        risk_r = entry_risk_index(opp_index=opp_r, pressure01=pres_r)
+
+        rows.append({
+            "Radius (m)": rr,
+            "Results": tot_r,
+            "Avg Score": round(avg_score_r, 1),
+            "Density (/km²)": round(dens_r, 1),
+            "Competitor %": int(round(comp_share_r * 100)),
+            "Opportunity %": int(round(opp_r * 100)),
+            "Pressure": int(round(pres_r * 100)),
+            "Risk": int(round(risk_r * 100)),
+        })
+
+    snap = pd.DataFrame(rows)
+    st.dataframe(snap, use_container_width=True, height=220)
+    st.caption("Tip: Use this table to compare how opportunity/pressure shifts as you widen the catchment radius.")
 
     st.write("")
     st.markdown("### Executive Insight")
@@ -376,7 +462,8 @@ with tab_overview:
   </div>
 
   <div class="muted small" style="line-height:1.6;">
-    Basis: Opportunity <b>{opp_index*100:.0f}%</b> • Avg score <b>{avg_score:.1f}</b> • Competitor share <b>{comp_share*100:.0f}%</b> • Density <b>{density:.1f}/km²</b>
+Basis: Opportunity {opp_index * 100:.0f}% • Avg score {avg_score:.1f} • Competitor share {comp_share * 100:.0f}% • Density {density:.1f}/km² • Pressure {pressure_score}/100 • Risk {risk_score}/100
+
   </div>
 </div>
 """,
