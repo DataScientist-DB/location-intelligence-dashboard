@@ -326,21 +326,58 @@ In production, the same dashboard can be connected to a live pipeline that:
 """
     )
 
-    st.markdown("### Interpretation notes")
+    # -----------------------------
+    # Header (Professional positioning)
+    # -----------------------------
     st.markdown(
-        """
-- **Score** is a composite signal from proximity, quality (rating), demand proxy (reviews), and competitor labeling.  
-- **Density** is the number of results divided by the circular area within the selected radius.  
-- **Opportunity** is a lightweight proxy combining average score and competitor share.  
-"""
-    )
+        f"""
+    <div class="card">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;">
+        <div>
+          <div style="margin-bottom:8px;">
+            <span class="badge">Decision Support</span>
+            <span class="badge">Site Selection</span>
+            <span class="badge">Market Saturation</span>
+            <span class="badge">Competitor Pressure</span>
+          </div>
 
-    st.markdown("### Compliance note")
-    st.markdown(
-        """
-This page includes **no external contact information** and is intended for portfolio demonstration.
-"""
-    )
+          <h1 style="margin:0;">🧭 Business Location Intelligence Dashboard</h1>
 
-st.write("")
+          <div class="muted" style="margin-top:6px;">
+            Evaluate a micro-market around a chosen anchor: <b>density</b>, <b>quality signals</b>, <b>competitive pressure</b>, and an <b>opportunity index</b> — exportable for briefs and investment memos.
+          </div>
+
+          <div class="muted small" style="margin-top:10px;">
+            <b>Current study:</b> {preset} &nbsp;•&nbsp; <b>Category:</b> {category} &nbsp;•&nbsp; <b>Radius:</b> {radius_m}m
+          </div>
+        </div>
+
+        <div style="
+          min-width: 260px;
+          border: 1px solid rgba(49, 51, 63, 0.12);
+          border-radius: 14px;
+          padding: 12px 14px;
+          background: rgba(255,255,255,0.02);
+        ">
+          <div class="muted" style="font-weight:600; margin-bottom:6px;">Executive Summary</div>
+          <div class="small" style="line-height:1.55;">
+            <div><b>Results:</b> {total}</div>
+            <div><b>Avg Score:</b> {avg_score:.1f}/100</div>
+            <div><b>Density:</b> {density:.1f}/km²</div>
+            <div><b>Opportunity:</b> {opp_index * 100:.0f}%</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:12px;" class="muted small">
+        <span style="opacity:0.85;">
+          Note: Demo-mode signals are illustrative. In production, this dashboard can connect to live POI sources (e.g., OSM/Overpass, Google data via licensed providers) and your competitor definitions.
+        </span>
+      </div>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
 st.caption("Note: Data shown is sample-formatted for demonstration. The dashboard can be connected to a live backend when needed.")
