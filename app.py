@@ -146,38 +146,76 @@ def pct_label(val01: float) -> str:
 def opportunity_recommendation(
     opp_index: float,
     density: float,
-    comp_share: float
+    comp_share: float,
+    radius_m: int
 ):
     """
-    Executive-style recommendation based on:
-    - Opportunity index (0..1)
-    - Density (per km²)
-    - Competitor share (0..1)
+    Executive-grade market recommendation logic.
+    Context-aware: density interpreted relative to radius.
     """
+
     pct = opp_index * 100
     comp_pct = comp_share * 100
 
-    # --- Smarter Market classification ---
-    if density > 20 and comp_pct > 40:
-        saturation_label = "highly saturated"
-    elif density > 10 or comp_pct > 40:
-        saturation_label = "moderately saturated"
-    elif density < 5 and comp_pct < 20:
-        saturation_label = "clearly underserved"
-    else:
-        saturation_label = "partially underserved"
+    # -------------------------------------------------
+    # Context-aware density interpretation
+    # Smaller radius naturally creates higher density
+    # -------------------------------------------------
+    density_per_1000m_equivalent = density * (radius_m / 1000)
 
+    if density_per_1000m_equivalent > 25:
+        saturation_label = "highly saturated"
+    elif density_per_1000m_equivalent > 12:
+        saturation_label = "moderately saturated"
+    else:
+        saturation_label = "structurally underserved"
+
+    # -------------------------------------------------
+    # Opportunity interpretation
+    # -------------------------------------------------
     if pct < 30:
         return {
-            "headline": "Limited Entry Attractiveness",
+            "headline": "Constrained Market Entry Conditions",
             "text": (
-                f"The area appears {saturation_label} with strong competitive pressure "
-                f"({comp_pct:.0f}% competitor share). Entry risk is elevated. "
-                "Consider differentiation strategy, niche positioning, or alternative zones."
+                f"The micro-market appears {saturation_label} with elevated competitive intensity "
+                f"({comp_pct:.0f}% competitor share). Risk-adjusted entry attractiveness is limited."
             ),
-            "action": "Validate pricing strategy and evaluate adjacent underserved micro-markets.",
-            "color": "#ffe5e5",
+            "action": (
+                "Reassess catchment definition, evaluate adjacent underserved pockets, "
+                "or refine differentiation strategy before capital commitment."
+            ),
+            "color": "#ffe5e5"
         }
+
+    elif pct < 60:
+        return {
+            "headline": "Selective Opportunity",
+            "text": (
+                f"The area shows {saturation_label} conditions with moderate competitive presence "
+                f"({comp_pct:.0f}% competitor share). Performance will depend on micro-location quality, "
+                "visibility, and brand positioning."
+            ),
+            "action": (
+                "Shortlist high-footfall corners, test proximity to anchors, "
+                "and conduct rental benchmarking prior to decision."
+            ),
+            "color": "#fff4e0"
+        }
+
+    else:
+        return {
+            "headline": "Favorable Market Entry Conditions",
+            "text": (
+                f"The catchment appears {saturation_label} with manageable competitive pressure "
+                f"({comp_pct:.0f}% competitor share). Market signals support expansion or new site feasibility."
+            ),
+            "action": (
+                "Proceed with due diligence: validate lease economics, "
+                "customer flow patterns, and competitive differentiation."
+            ),
+            "color": "#e6f4ea"
+        }
+
     elif pct < 60:
         return {
             "headline": "Selective Opportunity",
@@ -342,6 +380,7 @@ with tab_overview:
         opp_index=opp_index,
         density=density,
         comp_share=comp_share,
+        radius_m=radius_m
     )
 
     st.markdown(
