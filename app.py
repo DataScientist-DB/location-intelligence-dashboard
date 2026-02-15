@@ -352,6 +352,7 @@ with tab_overview:
         opp_index=opp_index,
         density=density,
         comp_share=comp_share,
+        radius_m=radius_m
     )
 
     st.markdown(
