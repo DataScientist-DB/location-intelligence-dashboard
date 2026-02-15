@@ -102,6 +102,55 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
 
     return df
 
+def ensure_score_column(
+    dfr: pd.DataFrame,
+    *,
+    center_lat: float,
+    center_lon: float,
+    radius_m: int,
+) -> pd.DataFrame:
+    """
+    Ensure dfr has a numeric 'score' column (0..100).
+    If missing, build it from rating/review_count/distance_m/is_competitor.
+    This prevents KeyError in Streamlit Cloud.
+    """
+    dfr = dfr.copy()
+
+    # Ensure distance_m exists
+    if "distance_m" not in dfr.columns:
+        if {"lat", "lng"}.issubset(dfr.columns):
+            dfr["distance_m"] = dfr.apply(
+                lambda r: int(haversine_km(center_lat, center_lon, r["lat"], r["lng"]) * 1000),
+                axis=1,
+            )
+        else:
+            dfr["distance_m"] = radius_m  # fallback
+
+    # Ensure basic columns exist
+    if "rating" not in dfr.columns:
+        dfr["rating"] = 4.0
+    if "review_count" not in dfr.columns:
+        dfr["review_count"] = 50
+    if "is_competitor" not in dfr.columns:
+        dfr["is_competitor"] = False
+
+    # Build score if missing
+    if "score" not in dfr.columns:
+        dist_norm = (dfr["distance_m"] / float(radius_m)).clip(0, 1)  # 0 close → 1 far
+        rating_norm = ((dfr["rating"].astype(float) - 3.0) / 2.0).clip(0, 1)
+        review_norm = (np.log1p(dfr["review_count"].astype(float)) / np.log1p(1200)).clip(0, 1)
+
+        score = (
+            15
+            + 45 * rating_norm
+            + 18 * review_norm
+            + 22 * (1 - dist_norm)
+            - 7 * dfr["is_competitor"].astype(int)
+        )
+        dfr["score"] = np.clip(np.round(score), 0, 100).astype(int)
+
+    return dfr
+
 def compute_score(df: pd.DataFrame, radius_m: int, seed: int = 42) -> pd.DataFrame:
     """Compute composite demo score (0..100) using rating/reviews/distance + competitor penalty."""
     if df.empty:
@@ -399,10 +448,15 @@ with tab_overview:
 
     snapshot_radii = [300, 500, 1000, 1500, 2000]
     rows = []
+
     for rr in snapshot_radii:
         dfr = make_demo_points(center_lat, center_lon, category, rr, n_points, seed=seed)
+
         if not show_competitors:
             dfr = dfr[dfr["is_competitor"] == False].reset_index(drop=True)
+
+        # ✅ FIX: guarantee 'score' exists
+        dfr = ensure_score_column(dfr, center_lat=center_lat, center_lon=center_lon, radius_m=rr)
 
         tot_r = len(dfr)
         avg_score_r = float(dfr["score"].mean()) if tot_r else 0.0
@@ -410,9 +464,7 @@ with tab_overview:
         dens_r = density_per_km2(tot_r, rr)
         comp_share_r = float(dfr["is_competitor"].mean()) if tot_r else 0.0
 
-        opp_r = (avg_score_r / 100.0) * (1.0 - comp_share_r)
-        opp_r = clamp01(opp_r)
-
+        opp_r = clamp01((avg_score_r / 100.0) * (1.0 - comp_share_r))
         pres_r = competitive_pressure_index(density=dens_r, comp_share=comp_share_r, density_ref=30.0)
         risk_r = entry_risk_index(opp_index=opp_r, pressure01=pres_r)
 
@@ -420,6 +472,7 @@ with tab_overview:
             "Radius (m)": rr,
             "Results": tot_r,
             "Avg Score": round(avg_score_r, 1),
+            "Avg Rating": round(avg_rating_r, 2),
             "Density (/km²)": round(dens_r, 1),
             "Competitor %": int(round(comp_share_r * 100)),
             "Opportunity %": int(round(opp_r * 100)),
@@ -428,8 +481,8 @@ with tab_overview:
         })
 
     snap = pd.DataFrame(rows)
-    st.dataframe(snap, use_container_width=True, height=220)
-    st.caption("Tip: Use this table to compare how opportunity/pressure shifts as you widen the catchment radius.")
+    st.dataframe(snap, use_container_width=True, height=240)
+    st.caption("Tip: Compare how opportunity/pressure/risk shifts as you widen the catchment radius.")
 
     st.write("")
     st.markdown("### Executive Insight")
