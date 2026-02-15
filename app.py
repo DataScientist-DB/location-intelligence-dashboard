@@ -142,6 +142,96 @@ def pressure_label(val: float) -> str:
 def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
+def build_executive_memo_html(
+    *,
+    city: str,
+    preset: str,
+    category: str,
+    radius_m: int,
+    total: int,
+    avg_score: float,
+    avg_rating: float,
+    density: float,
+    opp_index: float,
+    comp_share: float,
+    pressure_0_100: float,
+    risk_0_100: float,
+    rec: dict,
+    snapshot_df: pd.DataFrame,
+    top_df: pd.DataFrame,
+) -> str:
+    snap_html = snapshot_df.to_html(index=False) if snapshot_df is not None and not snapshot_df.empty else "<i>No snapshot</i>"
+    top_html = top_df.to_html(index=False) if top_df is not None and not top_df.empty else "<i>No top results</i>"
+
+    return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Executive Memo</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 28px; color:#111; }}
+    .muted {{ color:#666; }}
+    .kpis {{ display:grid; grid-template-columns: repeat(4, 1fr); gap:10px; margin: 14px 0 18px; }}
+    .kpi {{ border:1px solid #e5e7eb; border-radius:10px; padding:10px 12px; }}
+    .kpi b {{ display:block; font-size:12px; color:#374151; margin-bottom:6px; }}
+    .kpi span {{ font-size:16px; }}
+    .box {{ border:1px solid #e5e7eb; border-radius:12px; padding:14px; background:#fafafa; }}
+    h1 {{ margin: 0 0 6px; font-size: 20px; }}
+    h2 {{ margin: 18px 0 8px; font-size: 14px; }}
+    table {{ border-collapse: collapse; width: 100%; font-size: 12px; }}
+    th, td {{ border:1px solid #e5e7eb; padding:6px 8px; text-align:center; }}
+    th {{ background:#f3f4f6; }}
+    .left td:first-child, .left th:first-child {{ text-align:left; }}
+    @media print {{
+      body {{ margin: 12mm; }}
+      .no-print {{ display:none; }}
+    }}
+  </style>
+</head>
+<body>
+
+  <h1>Location Intelligence — Executive Memo</h1>
+  <div class="muted"><b>Study:</b> {preset} &nbsp;|&nbsp; <b>Category:</b> {category} &nbsp;|&nbsp; <b>Radius:</b> {radius_m}m</div>
+  <div class="muted"><b>City / Area label:</b> {city}</div>
+
+  <div class="kpis">
+    <div class="kpi"><b>Results</b><span>{total}</span></div>
+    <div class="kpi"><b>Avg Score</b><span>{avg_score:.1f}/100</span></div>
+    <div class="kpi"><b>Avg Rating</b><span>{avg_rating:.2f}</span></div>
+    <div class="kpi"><b>Density (/km²)</b><span>{density:.1f}</span></div>
+    <div class="kpi"><b>Opportunity</b><span>{opp_index*100:.0f}%</span></div>
+    <div class="kpi"><b>Competitor share</b><span>{comp_share*100:.0f}%</span></div>
+    <div class="kpi"><b>Pressure</b><span>{pressure_0_100:.0f}/100</span></div>
+    <div class="kpi"><b>Risk</b><span>{risk_0_100:.0f}/100</span></div>
+  </div>
+
+  <h2>Executive Insight</h2>
+  <div class="box">
+    <div><b>{rec.get("headline","")}</b></div>
+    <div style="margin-top:8px; line-height:1.55;">{rec.get("text","")}</div>
+    <div style="margin-top:10px;"><b>Recommended next step:</b> {rec.get("action","")}</div>
+    <div class="muted" style="margin-top:8px;">Basis: {rec.get("basis","")}</div>
+  </div>
+
+  <h2>Multi-radius Snapshot</h2>
+  <div class="left">{snap_html}</div>
+
+  <h2>Top Results</h2>
+  <div class="left">{top_html}</div>
+
+  <p class="muted" style="margin-top:14px;">
+    Note: Demo-mode signals are illustrative. In production, connect to live POI sources and your competitor definitions.
+  </p>
+
+  <p class="no-print muted">
+    Tip: Use your browser print dialog → “Save as PDF”.
+  </p>
+
+</body>
+</html>
+"""
+
 def compute_pressure_and_risk(density: float, comp_share: float, avg_score: float) -> tuple[float, float]:
     """
     Competitive Pressure (0..100): competition + density-driven intensity.
@@ -716,29 +806,19 @@ with tab_results:
         st.subheader("Top performers")
         if total:
             top = df.sort_values(["score", "rating", "review_count"], ascending=False).head(10)
-            pdf_bytes = build_executive_memo_pdf(
-                city=city,
-                preset=preset,
-                category=category,
-                radius_m=radius_m,
-                total=total,
-                avg_score=avg_score,
-                avg_rating=avg_rating,
-                density=density,
-                opp_index=opp_index,
-                comp_share=comp_share,
-                pressure_0_100=pressure_0_100,
-                risk_0_100=risk_0_100,
-                rec=rec,
-                snapshot_df=snap,
-                top_df=top,
+            memo_html = build_executive_memo_html(
+                city=city, preset=preset, category=category, radius_m=radius_m,
+                total=total, avg_score=avg_score, avg_rating=avg_rating, density=density,
+                opp_index=opp_index, comp_share=comp_share,
+                pressure_0_100=pressure_0_100, risk_0_100=risk_0_100,
+                rec=rec, snapshot_df=snap, top_df=top
             )
 
             st.sidebar.download_button(
-                "⬇️ Download Executive Memo (PDF)",
-                data=pdf_bytes,
-                file_name=f"executive_memo_{preset.replace(' ', '_')}_{category}_{radius_m}m.pdf",
-                mime="application/pdf",
+                "⬇️ Download Executive Memo (HTML → Print to PDF)",
+                data=memo_html.encode("utf-8"),
+                file_name=f"executive_memo_{preset.replace(' ', '_')}_{category}_{radius_m}m.html",
+                mime="text/html",
             )
 
             top_cols = [c for c in ["name", "rating", "review_count", "distance_m", "score", "is_competitor"] if c in top.columns]
