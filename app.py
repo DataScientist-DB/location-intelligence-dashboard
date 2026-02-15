@@ -2,6 +2,12 @@ import math
 import numpy as np
 import pandas as pd
 import streamlit as st
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
 st.set_page_config(page_title="Location Intelligence Dashboard", layout="wide")
 
@@ -169,6 +175,207 @@ def opportunity_recommendation(
     """
     pct = opp_index * 100.0
     comp_pct = comp_share * 100.0
+
+    def build_executive_memo_pdf(
+            *,
+            city: str,
+            preset: str,
+            category: str,
+            radius_m: int,
+            total: int,
+            avg_score: float,
+            avg_rating: float,
+            density: float,
+            opp_index: float,
+            comp_share: float,
+            pressure_0_100: float,
+            risk_0_100: float,
+            rec: dict,
+            snapshot_df: pd.DataFrame,
+            top_df: pd.DataFrame,
+    ) -> bytes:
+        """
+        Returns PDF bytes for an executive-ready memo.
+        Uses reportlab (Streamlit Cloud-safe).
+        """
+        buf = BytesIO()
+        doc = SimpleDocTemplate(
+            buf,
+            pagesize=A4,
+            leftMargin=18 * mm,
+            rightMargin=18 * mm,
+            topMargin=16 * mm,
+            bottomMargin=16 * mm,
+            title="Location Intelligence Memo",
+        )
+
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            "Title2",
+            parent=styles["Title"],
+            fontSize=16,
+            leading=20,
+            spaceAfter=10,
+        )
+        h_style = ParagraphStyle(
+            "H",
+            parent=styles["Heading2"],
+            fontSize=12,
+            leading=15,
+            spaceBefore=10,
+            spaceAfter=6,
+        )
+        body = ParagraphStyle(
+            "Body2",
+            parent=styles["BodyText"],
+            fontSize=10,
+            leading=14,
+        )
+        muted = ParagraphStyle(
+            "Muted",
+            parent=styles["BodyText"],
+            fontSize=9,
+            leading=12,
+            textColor=colors.HexColor("#666666"),
+        )
+
+        story = []
+
+        # Title + context
+        story.append(Paragraph("Location Intelligence — Executive Memo", title_style))
+        story.append(
+            Paragraph(
+                f"<b>Study:</b> {preset} &nbsp;&nbsp;|&nbsp;&nbsp; <b>Category:</b> {category} "
+                f"&nbsp;&nbsp;|&nbsp;&nbsp; <b>Radius:</b> {radius_m}m",
+                body,
+            )
+        )
+        story.append(Paragraph(f"<b>City / Area label:</b> {city}", muted))
+        story.append(Spacer(1, 8))
+
+        # KPI table
+        story.append(Paragraph("Key Metrics", h_style))
+        kpi_data = [
+            ["Results", "Avg Score", "Avg Rating", "Density (/km²)", "Opportunity", "Competitor Share", "Pressure",
+             "Risk"],
+            [
+                str(total),
+                f"{avg_score:.1f}/100",
+                f"{avg_rating:.2f}",
+                f"{density:.1f}",
+                f"{opp_index * 100:.0f}%",
+                f"{comp_share * 100:.0f}%",
+                f"{pressure_0_100:.0f}/100",
+                f"{risk_0_100:.0f}/100",
+            ],
+        ]
+        t = Table(kpi_data, colWidths=[22 * mm, 24 * mm, 22 * mm, 26 * mm, 22 * mm, 30 * mm, 22 * mm, 18 * mm])
+        t.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F3F4F6")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#111827")),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D1D5DB")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+                    ("TOPPADDING", (0, 0), (-1, 0), 6),
+                ]
+            )
+        )
+        story.append(t)
+        story.append(Spacer(1, 10))
+
+        # Executive insight box
+        story.append(Paragraph("Executive Insight", h_style))
+        story.append(Paragraph(f"<b>{rec.get('headline', '')}</b>", body))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(rec.get("text", ""), body))
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(f"<b>Recommended next step:</b> {rec.get('action', '')}", body))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(f"<b>Basis:</b> {rec.get('basis', '')}", muted))
+
+        # Snapshot table
+        if snapshot_df is not None and not snapshot_df.empty:
+            story.append(Spacer(1, 12))
+            story.append(Paragraph("Multi-radius Snapshot", h_style))
+
+            snap = snapshot_df.copy()
+            snap_cols = list(snap.columns)
+            snap_data = [snap_cols] + snap.astype(str).values.tolist()
+
+            # Reasonable widths for A4
+            col_w = [18 * mm, 18 * mm, 20 * mm, 20 * mm, 24 * mm, 22 * mm, 22 * mm, 18 * mm, 16 * mm]
+            col_w = col_w[: len(snap_cols)]  # safe if you change columns later
+            tt = Table(snap_data, colWidths=col_w)
+
+            tt.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F9FAFB")),
+                        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#E5E7EB")),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 8),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("BOTTOMPADDING", (0, 0), (-1, 0), 5),
+                        ("TOPPADDING", (0, 0), (-1, 0), 5),
+                    ]
+                )
+            )
+            story.append(tt)
+
+        # Top results
+        if top_df is not None and not top_df.empty:
+            story.append(Spacer(1, 12))
+            story.append(Paragraph("Top Results (Top 10)", h_style))
+            cols = [c for c in ["name", "rating", "review_count", "distance_m", "score", "is_competitor"] if
+                    c in top_df.columns]
+            tdf = top_df[cols].copy()
+
+            # Make it compact + safe for PDF
+            tdf["name"] = tdf["name"].astype(str).str.slice(0, 38)
+            tdf = tdf.head(10)
+
+            top_data = [cols] + tdf.astype(str).values.tolist()
+            top_col_w = []
+            for c in cols:
+                if c == "name":
+                    top_col_w.append(62 * mm)
+                elif c in ("review_count", "distance_m"):
+                    top_col_w.append(24 * mm)
+                else:
+                    top_col_w.append(20 * mm)
+
+            top_table = Table(top_data, colWidths=top_col_w)
+            top_table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F3F4F6")),
+                        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D1D5DB")),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 8),
+                        ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("BOTTOMPADDING", (0, 0), (-1, 0), 5),
+                        ("TOPPADDING", (0, 0), (-1, 0), 5),
+                    ]
+                )
+            )
+            story.append(top_table)
+
+        # Footer note
+        story.append(Spacer(1, 12))
+        story.append(
+            Paragraph(
+                "Note: Demo-mode signals are illustrative. In production, connect to live POI sources and your competitor definitions.",
+                muted,
+            )
+        )
+
+        doc.build(story)
+        return buf.getvalue()
 
     # Density bands tuned for your demo (avoid calling 3.6/km² "highly saturated")
     if density >= 60:
@@ -509,6 +716,31 @@ with tab_results:
         st.subheader("Top performers")
         if total:
             top = df.sort_values(["score", "rating", "review_count"], ascending=False).head(10)
+            pdf_bytes = build_executive_memo_pdf(
+                city=city,
+                preset=preset,
+                category=category,
+                radius_m=radius_m,
+                total=total,
+                avg_score=avg_score,
+                avg_rating=avg_rating,
+                density=density,
+                opp_index=opp_index,
+                comp_share=comp_share,
+                pressure_0_100=pressure_0_100,
+                risk_0_100=risk_0_100,
+                rec=rec,
+                snapshot_df=snap,
+                top_df=top,
+            )
+
+            st.sidebar.download_button(
+                "⬇️ Download Executive Memo (PDF)",
+                data=pdf_bytes,
+                file_name=f"executive_memo_{preset.replace(' ', '_')}_{category}_{radius_m}m.pdf",
+                mime="application/pdf",
+            )
+
             top_cols = [c for c in ["name", "rating", "review_count", "distance_m", "score", "is_competitor"] if c in top.columns]
             st.dataframe(top[top_cols], use_container_width=True, height=350)
         else:
