@@ -408,6 +408,16 @@ with tab_overview:
     hist["bucket"] = (hist["score"] // 10) * 10
     dist = hist.groupby("bucket").size().reset_index(name="count").sort_values("bucket").set_index("bucket")
     st.bar_chart(dist)
+if competitor_keywords_text.strip():
+    st.markdown(
+        f"<div class='muted small'>Competitors defined by keywords: <b>{competitor_keywords_text}</b></div>",
+        unsafe_allow_html=True,
+    )
+else:
+    st.markdown(
+        "<div class='muted small'>Competitors are demo-labeled (add keywords for real competitor definition).</div>",
+        unsafe_allow_html=True,
+    )
 
 with tab_results:
     left, right = st.columns([1.35, 1])
