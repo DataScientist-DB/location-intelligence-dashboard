@@ -157,12 +157,15 @@ def opportunity_recommendation(
     pct = opp_index * 100
     comp_pct = comp_share * 100
 
-    if density > 20:
+    # --- Smarter Market classification ---
+    if density > 20 and comp_pct > 40:
         saturation_label = "highly saturated"
-    elif density > 10:
+    elif density > 10 or comp_pct > 40:
         saturation_label = "moderately saturated"
+    elif density < 5 and comp_pct < 20:
+        saturation_label = "clearly underserved"
     else:
-        saturation_label = "underserved"
+        saturation_label = "partially underserved"
 
     if pct < 30:
         return {
