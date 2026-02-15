@@ -157,22 +157,17 @@ def opportunity_recommendation(
     pct = opp_index * 100
     comp_pct = comp_share * 100
 
-    # -------------------------------------------------
     # Context-aware density interpretation
-    # Smaller radius naturally creates higher density
-    # -------------------------------------------------
-    density_per_1000m_equivalent = density * (radius_m / 1000)
+    density_equivalent = density * (radius_m / 1000)
 
-    if density_per_1000m_equivalent > 25:
+    if density_equivalent > 25:
         saturation_label = "highly saturated"
-    elif density_per_1000m_equivalent > 12:
+    elif density_equivalent > 12:
         saturation_label = "moderately saturated"
     else:
         saturation_label = "structurally underserved"
 
-    # -------------------------------------------------
     # Opportunity interpretation
-    # -------------------------------------------------
     if pct < 30:
         return {
             "headline": "Constrained Market Entry Conditions",
@@ -192,8 +187,8 @@ def opportunity_recommendation(
             "headline": "Selective Opportunity",
             "text": (
                 f"The area shows {saturation_label} conditions with moderate competitive presence "
-                f"({comp_pct:.0f}% competitor share). Performance will depend on micro-location quality, "
-                "visibility, and brand positioning."
+                f"({comp_pct:.0f}% competitor share). Performance will depend on micro-location quality "
+                "and brand positioning."
             ),
             "action": (
                 "Shortlist high-footfall corners, test proximity to anchors, "
@@ -214,29 +209,6 @@ def opportunity_recommendation(
                 "customer flow patterns, and competitive differentiation."
             ),
             "color": "#e6f4ea"
-        }
-
-    elif pct < 60:
-        return {
-            "headline": "Selective Opportunity",
-            "text": (
-                f"The location shows {saturation_label} conditions with moderate competitive presence "
-                f"({comp_pct:.0f}% competitor share). Performance will depend on micro-location quality "
-                "and brand strength."
-            ),
-            "action": "Shortlist high-footfall corners and test proximity advantages.",
-            "color": "#fff4e0",
-        }
-    else:
-        return {
-            "headline": "Favorable Market Entry Conditions",
-            "text": (
-                f"The area appears {saturation_label} with manageable competitive intensity "
-                f"({comp_pct:.0f}% competitor share). Market signals support expansion "
-                "or new location feasibility."
-            ),
-            "action": "Proceed with site due diligence and rental benchmarking.",
-            "color": "#e6f4ea",
         }
 
 # -----------------------------
@@ -380,7 +352,6 @@ with tab_overview:
         opp_index=opp_index,
         density=density,
         comp_share=comp_share,
-        radius_m=radius_m
     )
 
     st.markdown(
