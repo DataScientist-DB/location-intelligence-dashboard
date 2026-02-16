@@ -72,7 +72,7 @@ def density_per_km2(count: int, radius_m: int) -> float:
     return (count / area_km2) if area_km2 > 0 else 0.0
 
 
-@st.cache_data(show_spinner=False)
+
 def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     rng = np.random.default_rng(seed)
 
