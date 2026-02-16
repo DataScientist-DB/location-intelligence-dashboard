@@ -516,7 +516,15 @@ def build_multi_radius_snapshot(
 ) -> pd.DataFrame:
     rows = []
     for r in radii:
-        dfr = make_demo_points(center_lat, center_lon, category, r, n_points, seed=seed)
+        # Scale result count with radius area so density behaves realistically
+        base_r = 1000  # reference radius for n_points
+        scaled_n = int(round(n_points * (r / base_r) ** 2))
+
+        # Keep it within reasonable bounds (avoid huge tables on 2000m)
+        scaled_n = max(10, min(250, scaled_n))
+
+        dfr = make_demo_points(center_lat, center_lon, category, r, scaled_n, seed=seed)
+
         dfr = apply_competitor_keywords(dfr, competitor_keywords_csv)
 
         if not include_competitors:
@@ -542,6 +550,8 @@ def build_multi_radius_snapshot(
                 "Opportunity %": int(round(opp_r * 100, 0)),
                 "Pressure": int(round(pressure_r, 0)),
                 "Risk": int(round(risk_r, 0)),
+                "Generated N": scaled_n,
+
             }
         )
 
