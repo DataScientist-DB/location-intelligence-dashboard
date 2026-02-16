@@ -432,7 +432,7 @@ def build_executive_memo_pdf(
 # -----------------------------
 # Multi-radius snapshot (NO caching!)
 # -----------------------------
-ddef build_multi_radius_snapshot(
+def build_multi_radius_snapshot(
     center_lat: float,
     center_lon: float,
     category: str,
