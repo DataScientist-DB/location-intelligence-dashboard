@@ -72,9 +72,17 @@ def density_per_km2(count: int, radius_m: int) -> float:
     return (count / area_km2) if area_km2 > 0 else 0.0
 
 
+def clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
 
 def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
-    rng = np.random.default_rng(seed)
+    """
+    IMPORTANT:
+    - no Streamlit caching here
+    - seed is forced to int
+    """
+    rng = np.random.default_rng(int(seed))
 
     # Spread points in a circle around the center
     r_deg = (radius_m / 1000.0) / 111.0  # approx degrees per km
@@ -88,16 +96,15 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     ratings = np.clip(rng.normal(4.2, 0.35, n), 3.0, 5.0)
     reviews = np.clip(rng.normal(180, 90, n).astype(int), 5, 1200)
 
-    # base competitor probability (demo)
     competitor_flag = rng.choice([True, False], size=n, p=[0.35, 0.65])
 
     df = pd.DataFrame(
         {
             "name": names,
             "category": category,
-            "lat": lats.round(6),
-            "lng": lons.round(6),
-            "rating": ratings.round(1),
+            "lat": np.round(lats, 6),
+            "lng": np.round(lons, 6),
+            "rating": np.round(ratings, 1),
             "review_count": reviews,
             "is_competitor": competitor_flag,
         }
@@ -109,11 +116,11 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     )
 
     # Composite score (0..100)
-    dist_norm = (df["distance_m"] / radius_m).clip(0, 1)  # 0 close → 1 far
-    rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)  # 3..5 → 0..1
+    dist_norm = (df["distance_m"] / float(radius_m)).clip(0, 1)  # 0 close → 1 far
+    rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)        # 3..5 → 0..1
     review_norm = (np.log1p(df["review_count"]) / np.log1p(1200)).clip(0, 1)
 
-    rng2 = np.random.default_rng(seed + 999)
+    rng2 = np.random.default_rng(int(seed) + 999)
     noise = rng2.normal(0, 4.0, len(df))
 
     score = (
@@ -126,7 +133,6 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     )
     df["score"] = np.clip(np.round(score), 0, 100).astype(int)
 
-    # Coverage proxy (0..1)
     df["coverage_pct"] = np.clip((df["score"] / 100) * rng.uniform(0.7, 1.1, n), 0, 1).round(2)
 
     return df.sort_values(["score", "review_count"], ascending=False).reset_index(drop=True)
@@ -157,16 +163,12 @@ def pressure_label(val: float) -> str:
     return "🔴 High"
 
 
-def clamp01(x: float) -> float:
-    return max(0.0, min(1.0, float(x)))
-
-
 def compute_pressure_and_risk(density: float, comp_share: float, avg_score: float) -> tuple[float, float]:
     """
     Competitive Pressure (0..100): competition + density-driven intensity.
     Entry Risk (0..100): pressure + weak quality signals.
     """
-    dens_n = clamp01(density / 20.0)  # density scaling for demo
+    dens_n = clamp01(density / 20.0)  # demo scaling
     comp_n = clamp01(comp_share)      # already 0..1
     quality_n = clamp01(avg_score / 100.0)
 
@@ -215,18 +217,9 @@ def opportunity_recommendation(
     risk_0_100: float,
     avg_score: float,
 ):
-    """
-    Executive-style recommendation based on:
-    - Opportunity index (0..1)
-    - Market density (per km2)
-    - Competitor share (0..1)
-    - Competitive pressure (0..100)
-    - Entry risk (0..100)
-    """
     pct = opp_index * 100.0
     comp_pct = comp_share * 100.0
 
-    # Density bands tuned for your demo (avoid calling 3.6/km² "highly saturated")
     if density >= 60:
         saturation_label = "highly saturated"
     elif density >= 15:
@@ -248,7 +241,7 @@ def opportunity_recommendation(
             ),
             "action": "Re-check adjacent micro-zones, test a niche format, or improve offer differentiation before committing.",
             "basis": f"Opportunity {pct:.0f}% • Avg score {avg_score:.1f} • Competitor share {comp_pct:.0f}% • Density {density:.1f}/km² • Pressure {pressure_0_100:.0f}/100 • Risk {risk_0_100:.0f}/100",
-            "color": "#ffe5e5",  # light red
+            "color": "#ffe5e5",
         }
 
     if pct < 60:
@@ -261,7 +254,7 @@ def opportunity_recommendation(
             ),
             "action": "Shortlist high-footfall corners, test proximity to anchors, and conduct rental benchmarking prior to decision.",
             "basis": f"Opportunity {pct:.0f}% • Avg score {avg_score:.1f} • Competitor share {comp_pct:.0f}% • Density {density:.1f}/km² • Pressure {pressure_0_100:.0f}/100 • Risk {risk_0_100:.0f}/100",
-            "color": "#fff4e0",  # light orange
+            "color": "#fff4e0",
         }
 
     return {
@@ -273,15 +266,11 @@ def opportunity_recommendation(
         ),
         "action": "Proceed with site due diligence, access checks, and rental benchmarking; validate demand with a small pilot.",
         "basis": f"Opportunity {pct:.0f}% • Avg score {avg_score:.1f} • Competitor share {comp_pct:.0f}% • Density {density:.1f}/km² • Pressure {pressure_0_100:.0f}/100 • Risk {risk_0_100:.0f}/100",
-        "color": "#e6f4ea",  # light green
+        "color": "#e6f4ea",
     }
 
 
 def apply_competitor_keywords(df: pd.DataFrame, keywords_csv: str) -> pd.DataFrame:
-    """
-    Optional: If competitor keywords are given, mark rows as competitors if name contains keyword.
-    (Demo dataset names are generic; in production this becomes powerful.)
-    """
     keywords = [k.strip().lower() for k in (keywords_csv or "").split(",") if k.strip()]
     if not keywords:
         return df
@@ -320,10 +309,6 @@ def build_executive_memo_pdf(
     snapshot_df: pd.DataFrame,
     top_df: pd.DataFrame,
 ) -> bytes:
-    """
-    Returns PDF bytes for an executive-ready memo.
-    Uses reportlab (Streamlit Cloud-safe) if installed.
-    """
     if not REPORTLAB_OK:
         return b""
 
@@ -339,38 +324,12 @@ def build_executive_memo_pdf(
     )
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "Title2",
-        parent=styles["Title"],
-        fontSize=16,
-        leading=20,
-        spaceAfter=10,
-    )
-    h_style = ParagraphStyle(
-        "H",
-        parent=styles["Heading2"],
-        fontSize=12,
-        leading=15,
-        spaceBefore=10,
-        spaceAfter=6,
-    )
-    body = ParagraphStyle(
-        "Body2",
-        parent=styles["BodyText"],
-        fontSize=10,
-        leading=14,
-    )
-    muted = ParagraphStyle(
-        "Muted",
-        parent=styles["BodyText"],
-        fontSize=9,
-        leading=12,
-        textColor=colors.HexColor("#666666"),
-    )
+    title_style = ParagraphStyle("Title2", parent=styles["Title"], fontSize=16, leading=20, spaceAfter=10)
+    h_style = ParagraphStyle("H", parent=styles["Heading2"], fontSize=12, leading=15, spaceBefore=10, spaceAfter=6)
+    body = ParagraphStyle("Body2", parent=styles["BodyText"], fontSize=10, leading=14)
+    muted = ParagraphStyle("Muted", parent=styles["BodyText"], fontSize=9, leading=12, textColor=colors.HexColor("#666666"))
 
     story = []
-
-    # Title + context
     story.append(Paragraph("Location Intelligence — Executive Memo", title_style))
     story.append(
         Paragraph(
@@ -386,7 +345,6 @@ def build_executive_memo_pdf(
     story.append(Paragraph(f"<b>{verdict}</b>", body))
     story.append(Spacer(1, 8))
 
-    # KPI table
     story.append(Paragraph("Key Metrics", h_style))
     kpi_data = [
         ["Results", "Avg Score", "Avg Rating", "Density (/km²)", "Opportunity", "Competitor Share", "Pressure", "Risk"],
@@ -419,7 +377,6 @@ def build_executive_memo_pdf(
     story.append(t)
     story.append(Spacer(1, 10))
 
-    # Executive insight
     story.append(Paragraph("Executive Insight", h_style))
     story.append(Paragraph(f"<b>{rec.get('headline', '')}</b>", body))
     story.append(Spacer(1, 4))
@@ -429,15 +386,12 @@ def build_executive_memo_pdf(
     story.append(Spacer(1, 4))
     story.append(Paragraph(f"<b>Basis:</b> {rec.get('basis', '')}", muted))
 
-    # Snapshot table
     if snapshot_df is not None and not snapshot_df.empty:
         story.append(Spacer(1, 12))
         story.append(Paragraph("Multi-radius Snapshot", h_style))
-
         snap = snapshot_df.copy()
         snap_cols = list(snap.columns)
         snap_data = [snap_cols] + snap.astype(str).values.tolist()
-
         col_w = [18 * mm, 18 * mm, 20 * mm, 20 * mm, 24 * mm, 22 * mm, 22 * mm, 18 * mm, 16 * mm]
         col_w = col_w[: len(snap_cols)]
         tt = Table(snap_data, colWidths=col_w)
@@ -456,7 +410,6 @@ def build_executive_memo_pdf(
         )
         story.append(tt)
 
-    # Top results
     if top_df is not None and not top_df.empty:
         story.append(Spacer(1, 12))
         story.append(Paragraph("Top Results (Top 10)", h_style))
@@ -514,16 +467,25 @@ def build_multi_radius_snapshot(
     include_competitors: bool,
     radii=(300, 500, 1000, 1500, 2000),
 ) -> pd.DataFrame:
+    """
+    FIX for 'frozen' snapshot:
+    - per-radius dynamic seed includes ALL current inputs (incl. keywords + include_competitors)
+    - scaled_n varies with radius area so Results/Density change (like "real" discovery)
+    """
     rows = []
     base_r = 1000  # reference radius for n_points
 
+    kw_norm = (competitor_keywords_csv or "").strip().lower()
+    inc = bool(include_competitors)
+
     for r in radii:
-        # Scale results with area so density behaves
         scaled_n = int(round(n_points * (r / base_r) ** 2))
         scaled_n = max(10, min(250, scaled_n))
 
-        # Radius-specific seed so each row is truly different
-        dynamic_seed = abs(hash((center_lat, center_lon, category, r, scaled_n, seed))) % (10 ** 6)
+        # More "sensitive" seed so every control change forces a new snapshot
+        dynamic_seed = abs(
+            hash((round(center_lat, 6), round(center_lon, 6), category, r, scaled_n, int(seed), kw_norm, inc))
+        ) % (10**6)
 
         dfr = make_demo_points(center_lat, center_lon, category, r, scaled_n, seed=dynamic_seed)
         dfr = apply_competitor_keywords(dfr, competitor_keywords_csv)
@@ -573,13 +535,14 @@ preset = st.sidebar.selectbox(
 category = st.sidebar.selectbox("Category", ["pharmacy", "restaurant", "hospital", "school", "grocery"])
 radius_m = st.sidebar.selectbox("Radius (meters)", [300, 500, 1000, 1500, 2000], index=2)
 n_points = st.sidebar.slider("Number of results", 10, 120, 45, step=5)
+
 st.sidebar.divider()
 if "demo_nonce" not in st.session_state:
     st.session_state["demo_nonce"] = 0
 
 if st.sidebar.button("🔄 Regenerate demo data"):
     st.session_state["demo_nonce"] += 1
-    st.cache_data.clear()  # clears any cache_data leftovers anywhere
+    st.cache_data.clear()
 
 st.sidebar.divider()
 st.sidebar.subheader("Competitor Definition (optional)")
@@ -598,9 +561,22 @@ centers = {
     "Berlin (Mitte)": (52.520008, 13.404954),
 }
 center_lat, center_lon = centers[preset]
-seed = abs(hash((preset, category, radius_m, n_points, st.session_state["demo_nonce"]))) % (10**6)
 
-
+# IMPORTANT: seed includes EVERYTHING that should force recalculation (fixes 'frozen' feel)
+seed = abs(
+    hash(
+        (
+            city.strip().lower(),
+            preset,
+            category,
+            radius_m,
+            n_points,
+            (competitor_keywords_csv or "").strip().lower(),
+            bool(show_competitors),
+            int(st.session_state["demo_nonce"]),
+        )
+    )
+) % (10**6)
 
 # -----------------------------
 # Data
@@ -620,7 +596,6 @@ comp_share = float(df["is_competitor"].mean()) if total and "is_competitor" in d
 opp_index = clamp01((avg_score / 100.0) * (1.0 - comp_share))
 pressure_0_100, risk_0_100 = compute_pressure_and_risk(density, comp_share, avg_score)
 
-# Compute these OUTSIDE tabs so Results tab never breaks
 market_type = market_classification(opp_index)
 verdict = investment_verdict(opp_index)
 rec = opportunity_recommendation(
@@ -672,7 +647,6 @@ st.write("")
 tab_overview, tab_results, tab_method = st.tabs(["📌 Overview", "📋 Results", "🧠 Method"])
 
 with tab_overview:
-    # KPI row 1
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Results", total)
     c2.metric("Avg Score", f"{avg_score:.1f}/100", score_label(avg_score))
@@ -680,17 +654,14 @@ with tab_overview:
     c4.metric("Density (/km²)", f"{density:.1f}")
     c5.metric("Opportunity", f"{opp_index * 100:.0f}%", pct_label(opp_index))
 
-    # 2) Visual Opportunity Gauge
     st.progress(int(round(opp_index * 100)))
 
-    # KPI row 2
     st.write("")
     k1, k2, k3 = st.columns(3)
     k1.metric("Competitive Pressure", f"{pressure_0_100:.0f}/100", pressure_label(pressure_0_100))
     k2.metric("Entry Risk", f"{risk_0_100:.0f}/100", pressure_label(risk_0_100))
     k3.metric("Competitor Share", f"{comp_share * 100:.0f}%")
 
-    # 1) Market Type badge
     st.write("")
     st.markdown(
         f"""
@@ -708,10 +679,7 @@ with tab_overview:
         unsafe_allow_html=True,
     )
 
-    # Executive Insight
     st.markdown("### Executive Insight")
-
-    # 4) One-line investment verdict (directly under the section title)
     st.markdown(f"**{verdict}**")
 
     st.markdown(
@@ -742,10 +710,9 @@ with tab_overview:
         unsafe_allow_html=True,
     )
 
-    # Multi-radius snapshot
     st.write("")
     st.markdown("### Multi-radius snapshot")
-    st.dataframe(snap, use_container_width=True, height=220)
+    st.dataframe(snap, use_container_width=True, height=230)
 
     st.write("")
     left, right = st.columns([1.15, 1])
@@ -783,19 +750,12 @@ with tab_overview:
             unsafe_allow_html=True,
         )
 
-    # Score distribution
     st.write("")
     st.markdown("### Score distribution")
     if total and "score" in df.columns:
         hist = df[["score"]].copy()
         hist["bucket"] = (hist["score"] // 10) * 10
-        dist = (
-            hist.groupby("bucket")
-            .size()
-            .reset_index(name="count")
-            .sort_values("bucket")
-            .set_index("bucket")
-        )
+        dist = hist.groupby("bucket").size().reset_index(name="count").sort_values("bucket").set_index("bucket")
         st.bar_chart(dist)
     else:
         st.info("Score distribution is unavailable (no results).")
