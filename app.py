@@ -581,7 +581,18 @@ st.sidebar.header("Analysis Parameters")
 preset = st.sidebar.selectbox(
     "Area",
     ["Los Angeles (Downtown)", "Washington, DC", "New York (Midtown)", "Berlin (Mitte)"],
+    key="area_preset",
 )
+
+city_map = {
+    "Los Angeles (Downtown)": "Los Angeles, CA",
+    "Washington, DC": "Washington, DC",
+    "New York (Midtown)": "New York, NY",
+    "Berlin (Mitte)": "Berlin, Germany",
+}
+city = city_map.get(preset, preset)
+st.sidebar.caption(f"City / Area label: {city}")
+
 
 # Auto-sync city label with preset
 city_map = {
@@ -594,10 +605,7 @@ city_map = {
 city = city_map.get(preset, preset)
 
 
-preset = st.sidebar.selectbox(
-    "Area",
-    ["Los Angeles (Downtown)", "Washington, DC", "New York (Midtown)", "Berlin (Mitte)"],
-)
+
 
 category = st.sidebar.selectbox("Category", ["pharmacy", "restaurant", "hospital", "school", "grocery"])
 radius_m = st.sidebar.selectbox("Radius (meters)", [300, 500, 1000, 1500, 2000], index=2)
