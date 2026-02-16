@@ -440,24 +440,42 @@ def build_multi_radius_snapshot(
     base_seed: int,
     competitor_keywords_csv: str,
     include_competitors: bool,
+    demo_density_mode: str,
     radii=(300, 500, 1000, 1500, 2000),
 ) -> pd.DataFrame:
     """
-    IMPORTANT:
-    - No caching here
-    - Uses per-radius scaling so density behaves realistically
-    - Uses per-radius dynamic seed so rows cannot freeze
+    Snapshot modes:
+    1) Constant N: same generated N for each radius → density changes with radius (obvious)
+    2) Constant density: generated N scales with area → density ~constant (what you currently have)
+    3) Market gradient: density varies with radius (more realistic “CBD vs outskirts” vibe)
     """
     rows = []
     base_r = 1000  # reference radius for n_points
 
     for r in radii:
-        # Scale results with area so density looks intuitive
-        scaled_n = int(round(n_points * (r / base_r) ** 2))
-        scaled_n = max(10, min(250, scaled_n))
+        # Strong per-radius seed
+        dynamic_seed = abs(hash((center_lat, center_lon, category, r, n_points, base_seed))) % (10**9)
+        rng = np.random.default_rng(dynamic_seed)
 
-        # Strong per-radius seed (depends on all inputs)
-        dynamic_seed = abs(hash((center_lat, center_lon, category, r, scaled_n, base_seed))) % (10**6)
+        if demo_density_mode.startswith("Constant N"):
+            scaled_n = int(n_points)  # same N at all radii
+
+        elif demo_density_mode.startswith("Constant density"):
+            scaled_n = int(round(n_points * (r / base_r) ** 2))  # your current logic
+
+        else:
+            # Market gradient:
+            # higher density close-in, lower density further out (tweak these for your story)
+            # factor >1 near center, <1 far away
+            gradient = (base_r / float(r)) ** 0.7  # 300m bigger, 2000m smaller
+            scaled_n = int(round(n_points * (r / base_r) ** 2 * gradient))
+
+        # Add "realistic" noise so it never feels frozen
+        # (Poisson around scaled_n)
+        scaled_n = int(rng.poisson(lam=max(5, scaled_n)))
+
+        # Keep within sane bounds
+        scaled_n = max(10, min(350, scaled_n))
 
         dfr = make_demo_points(center_lat, center_lon, category, r, scaled_n, seed=dynamic_seed)
         dfr = apply_competitor_keywords(dfr, competitor_keywords_csv)
@@ -477,8 +495,8 @@ def build_multi_radius_snapshot(
         rows.append(
             {
                 "Radius (m)": r,
-                "Generated N": scaled_n,
-                "Results": tot,
+                "Generated N": int(scaled_n),
+                "Results": int(tot),
                 "Avg Score": round(avg_score_r, 1),
                 "Avg Rating": round(avg_rating_r, 2),
                 "Density (/km²)": round(density_r, 1),
@@ -584,6 +602,13 @@ centers = {
     "Berlin (Mitte)": (52.520008, 13.404954),
 }
 center_lat, center_lon = centers[preset]
+
+st.sidebar.subheader("Demo realism")
+demo_density_mode = st.sidebar.radio(
+    "Demo mode behavior",
+    ["Constant N (density changes with radius)", "Constant density (N scales with area)", "Market gradient (density varies by radius)"],
+    index=1,
+)
 
 # Seed must change with parameters + nonce (prevents "frozen" snapshot)
 seed = abs(hash((preset, city, category, radius_m, n_points, st.session_state["demo_nonce"]))) % (10**6)
@@ -754,7 +779,9 @@ with tab_overview:
         base_seed=seed,
         competitor_keywords_csv=competitor_keywords_csv,
         include_competitors=show_competitors,
+        demo_density_mode=demo_density_mode,
     )
+
     st.dataframe(snap, use_container_width=True, height=240)
 
     # Business value + map
