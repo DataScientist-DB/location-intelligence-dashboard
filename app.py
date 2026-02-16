@@ -581,7 +581,8 @@ centers = {
     "Berlin (Mitte)": (52.520008, 13.404954),
 }
 center_lat, center_lon = centers[preset]
-seed = 42  # stable demo runs
+seed = abs(hash((preset, category, radius_m, n_points))) % (10**6)
+
 
 # -----------------------------
 # Data
