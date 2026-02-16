@@ -578,7 +578,21 @@ def apify_fetch_dataset_items(dataset_id: str, token: str, limit: int = 5000):
 # -----------------------------
 st.sidebar.header("Analysis Parameters")
 
-city = st.sidebar.text_input("City / Area", "Los Angeles, CA")
+preset = st.sidebar.selectbox(
+    "Area",
+    ["Los Angeles (Downtown)", "Washington, DC", "New York (Midtown)", "Berlin (Mitte)"],
+)
+
+# Auto-sync city label with preset
+city_map = {
+    "Los Angeles (Downtown)": "Los Angeles, CA",
+    "Washington, DC": "Washington, DC",
+    "New York (Midtown)": "New York, NY",
+    "Berlin (Mitte)": "Berlin, Germany",
+}
+
+city = city_map.get(preset, preset)
+
 
 preset = st.sidebar.selectbox(
     "Area",
