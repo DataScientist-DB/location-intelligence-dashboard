@@ -515,18 +515,17 @@ def build_multi_radius_snapshot(
     radii=(300, 500, 1000, 1500, 2000),
 ) -> pd.DataFrame:
     rows = []
+    base_r = 1000  # reference radius for n_points
+
     for r in radii:
-        dynamic_seed = abs(hash((center_lat, center_lon, category, r, n_points))) % (10 ** 6)
-
-        # Scale result count with radius area so density behaves realistically
-        base_r = 1000  # reference radius for n_points
+        # Scale results with area so density behaves
         scaled_n = int(round(n_points * (r / base_r) ** 2))
-
-        # Keep it within reasonable bounds (avoid huge tables on 2000m)
         scaled_n = max(10, min(250, scaled_n))
 
-        dfr = make_demo_points(center_lat, center_lon, category, r, scaled_n, seed=dynamic_seed)
+        # Radius-specific seed so each row is truly different
+        dynamic_seed = abs(hash((center_lat, center_lon, category, r, scaled_n, seed))) % (10 ** 6)
 
+        dfr = make_demo_points(center_lat, center_lon, category, r, scaled_n, seed=dynamic_seed)
         dfr = apply_competitor_keywords(dfr, competitor_keywords_csv)
 
         if not include_competitors:
@@ -544,6 +543,7 @@ def build_multi_radius_snapshot(
         rows.append(
             {
                 "Radius (m)": r,
+                "Generated N": scaled_n,
                 "Results": tot,
                 "Avg Score": round(avg_score_r, 1),
                 "Avg Rating": round(avg_rating_r, 2),
@@ -552,8 +552,6 @@ def build_multi_radius_snapshot(
                 "Opportunity %": int(round(opp_r * 100, 0)),
                 "Pressure": int(round(pressure_r, 0)),
                 "Risk": int(round(risk_r, 0)),
-                "Generated N": scaled_n,
-
             }
         )
 
@@ -575,6 +573,13 @@ preset = st.sidebar.selectbox(
 category = st.sidebar.selectbox("Category", ["pharmacy", "restaurant", "hospital", "school", "grocery"])
 radius_m = st.sidebar.selectbox("Radius (meters)", [300, 500, 1000, 1500, 2000], index=2)
 n_points = st.sidebar.slider("Number of results", 10, 120, 45, step=5)
+st.sidebar.divider()
+if "demo_nonce" not in st.session_state:
+    st.session_state["demo_nonce"] = 0
+
+if st.sidebar.button("🔄 Regenerate demo data"):
+    st.session_state["demo_nonce"] += 1
+    st.cache_data.clear()  # clears any cache_data leftovers anywhere
 
 st.sidebar.divider()
 st.sidebar.subheader("Competitor Definition (optional)")
@@ -593,7 +598,8 @@ centers = {
     "Berlin (Mitte)": (52.520008, 13.404954),
 }
 center_lat, center_lon = centers[preset]
-seed = abs(hash((preset, category, radius_m, n_points))) % (10**6)
+seed = abs(hash((preset, category, radius_m, n_points, st.session_state["demo_nonce"]))) % (10**6)
+
 
 
 # -----------------------------
