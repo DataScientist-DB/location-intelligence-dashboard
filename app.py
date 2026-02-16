@@ -432,7 +432,7 @@ def build_executive_memo_pdf(
 # -----------------------------
 # Multi-radius snapshot (NO caching!)
 # -----------------------------
-def build_multi_radius_snapshot(
+ddef build_multi_radius_snapshot(
     center_lat: float,
     center_lon: float,
     category: str,
@@ -446,8 +446,13 @@ def build_multi_radius_snapshot(
     """
     Snapshot modes:
     1) Constant N: same generated N for each radius → density changes with radius (obvious)
-    2) Constant density: generated N scales with area → density ~constant (what you currently have)
-    3) Market gradient: density varies with radius (more realistic “CBD vs outskirts” vibe)
+    2) Constant density: generated N scales with area → density ~constant (baseline comparison)
+    3) Market gradient: density varies by radius (more realistic “CBD vs outskirts” vibe)
+
+    Fixes:
+    - 300/500 no longer freeze at the hard min (10)
+    - 1500/2000 no longer both hit the same hard max (350)
+    - "Generated N" varies naturally, and "Results" can differ slightly (drop-rate)
     """
     rows = []
     base_r = 1000  # reference radius for n_points
@@ -457,32 +462,55 @@ def build_multi_radius_snapshot(
         dynamic_seed = abs(hash((center_lat, center_lon, category, r, n_points, base_seed))) % (10**9)
         rng = np.random.default_rng(dynamic_seed)
 
+        # -----------------------------
+        # 1) Compute baseline expected N
+        # -----------------------------
         if demo_density_mode.startswith("Constant N"):
-            scaled_n = int(n_points)  # same N at all radii
+            base_n = float(n_points)
 
         elif demo_density_mode.startswith("Constant density"):
-            scaled_n = int(round(n_points * (r / base_r) ** 2))  # your current logic
+            base_n = float(n_points) * (r / base_r) ** 2
 
         else:
-            # Market gradient:
-            # higher density close-in, lower density further out (tweak these for your story)
-            # factor >1 near center, <1 far away
+            # Market gradient: higher density close-in, lower further out
             gradient = (base_r / float(r)) ** 0.7  # 300m bigger, 2000m smaller
-            scaled_n = int(round(n_points * (r / base_r) ** 2 * gradient))
+            base_n = float(n_points) * (r / base_r) ** 2 * gradient
 
-        # Add "realistic" noise so it never feels frozen
-        # (Poisson around scaled_n)
-        scaled_n = int(rng.poisson(lam=max(5, scaled_n)))
+        # -----------------------------
+        # 2) Add noise WITHOUT “small-radius freeze” or “big-radius ceiling ties”
+        #    (Poisson repeats too often for small lambdas; use normal here)
+        # -----------------------------
+        sigma = max(2.0, base_n * 0.18)
+        noisy_n = int(round(rng.normal(loc=base_n, scale=sigma)))
 
-        # Keep within sane bounds
-        scaled_n = max(10, min(350, scaled_n))
+        # -----------------------------
+        # 3) Radius-aware bounds (instead of hard 10..350)
+        # -----------------------------
+        min_n = max(6, int(round(n_points * 0.10)))  # not always 10
+        # max grows with radius & base_n (prevents 1500/2000 both capping)
+        max_n = int(round(max(base_n * 2.2, n_points * (r / base_r) ** 2 * 3.0)))
+        max_n = max(max_n, min_n + 12)
 
+        scaled_n = int(np.clip(noisy_n, min_n, max_n))
+
+        # -----------------------------
+        # 4) Generate data
+        # -----------------------------
         dfr = make_demo_points(center_lat, center_lon, category, r, scaled_n, seed=dynamic_seed)
         dfr = apply_competitor_keywords(dfr, competitor_keywords_csv)
 
         if not include_competitors and "is_competitor" in dfr.columns:
             dfr = dfr[dfr["is_competitor"] == False].reset_index(drop=True)
 
+        # OPTIONAL realism: let Results differ from Generated N a bit
+        # (simulate dedupe/invalids/filter fallout)
+        drop_rate = float(rng.uniform(0.03, 0.12))
+        keep_frac = max(0.75, 1.0 - drop_rate)  # never drop too much
+        dfr = dfr.sample(frac=keep_frac, random_state=int(dynamic_seed % (2**32 - 1))).reset_index(drop=True)
+
+        # -----------------------------
+        # 5) Metrics
+        # -----------------------------
         tot = len(dfr)
         avg_score_r = safe_mean(dfr, "score")
         avg_rating_r = safe_mean(dfr, "rating")
@@ -508,6 +536,7 @@ def build_multi_radius_snapshot(
         )
 
     return pd.DataFrame(rows)
+
 
 # -----------------------------
 # Optional: Apify fetch helpers (cached is OK here)
