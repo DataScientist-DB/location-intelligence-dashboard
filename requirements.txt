@@ -1,4 +1,6 @@
 streamlit
-numpy
 pandas
+numpy
 reportlab
+openpyxl
+apify-client
