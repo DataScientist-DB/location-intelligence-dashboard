@@ -557,20 +557,51 @@ def apify_fetch_kv_json(store_id: str, key: str, token: str):
     return (rec or {}).get("value")
 
 @st.cache_data(show_spinner=False, ttl=60)
-def apify_fetch_dataset_items(dataset_id: str, token: str, limit: int = 5000):
+@st.cache_data(show_spinner=False, ttl=60)
+def apify_fetch_dataset_items(dataset_id: str, token: str, limit: int = 5000) -> pd.DataFrame:
     if ApifyClient is None:
         raise RuntimeError("apify-client not installed. Add apify-client to requirements.txt")
+
     client = ApifyClient(token)
-    items = []
+    items: list = []
     offset = 0
     page_limit = 1000
+
     while True:
         resp = client.dataset(dataset_id).list_items(limit=page_limit, offset=offset)
-        batch = resp.get("items", [])
+
+        # --- Normalize response across apify-client versions ---
+        if resp is None:
+            batch = []
+
+        # Newer/older versions may return dict-like payload
+        elif isinstance(resp, dict):
+            batch = resp.get("items") or resp.get("data") or []
+
+        # Some versions return an object with `.items`
+        elif hasattr(resp, "items") and not isinstance(resp, list):
+            batch = getattr(resp, "items") or []
+
+        # Some versions may return list directly
+        else:
+            batch = resp
+
+        # Safety: ensure batch is a list
+        if batch is None:
+            batch = []
+        elif isinstance(batch, dict):
+            batch = [batch]
+        else:
+            batch = list(batch)
+
         items.extend(batch)
+
+        # Stop conditions
         if len(batch) < page_limit or len(items) >= limit:
             break
+
         offset += page_limit
+
     return pd.DataFrame(items[:limit])
 
 # -----------------------------
