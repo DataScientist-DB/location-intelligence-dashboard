@@ -1,9 +1,17 @@
+# app.py — Location Intelligence Dashboard (Actor #7 compatible)
+# Paste this whole file to replace your current app.py
+
+from __future__ import annotations
+
 import math
 import os
+from io import BytesIO
+from typing import Optional, Tuple, List
+
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
-from io import BytesIO
 
 # PDF (reportlab)
 from reportlab.lib.pagesizes import A4
@@ -12,23 +20,17 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
-# Optional: Apify integration (safe if installed; otherwise ignored)
-try:
-    from apify_client import ApifyClient  # pip install apify-client
-except Exception:
-    ApifyClient = None
 
+# =============================================================================
+# Streamlit config + styling
+# =============================================================================
 st.set_page_config(page_title="Location Intelligence Dashboard", layout="wide")
 
-# -----------------------------
-# Light styling (safe + clean)
-# -----------------------------
 st.markdown(
     """
 <style>
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
 h1, h2, h3 { margin-bottom: 0.3rem; }
-
 .card {
   border: 1px solid rgba(49, 51, 63, 0.12);
   border-radius: 16px;
@@ -55,11 +57,62 @@ h1, h2, h3 { margin-bottom: 0.3rem; }
     unsafe_allow_html=True,
 )
 
-# -----------------------------
-# Helpers
-# -----------------------------
+
+# =============================================================================
+# Constants / mappings
+# =============================================================================
+UI_TO_ACTOR_CATEGORY_IDS = {
+    "pharmacy": ["health_pharmacy"],
+    "restaurant": ["food_restaurant"],
+    "fast_food": ["food_fast_food"],
+    "cafe": ["food_cafe"],
+    "bar_pub": ["food_bar_pub"],
+    "supermarket": ["retail_supermarket"],
+    "convenience": ["retail_convenience"],
+    "grocery": ["retail_grocery"],
+    "bakery": ["retail_bakery"],
+    "clinic": ["health_clinic"],
+    "hospital": ["health_hospital"],
+    "dentist": ["health_dentist"],
+}
+
+def _wanted_category_ids(ui_category: str) -> List[str]:
+    ui = (ui_category or "").strip().lower()
+    if not ui:
+        return []
+    return UI_TO_ACTOR_CATEGORY_IDS.get(ui, [ui])
+
+
+# =============================================================================
+# Helper functions
+# =============================================================================
+def df_to_xlsx_bytes(df: pd.DataFrame, sheet_name: str = "export") -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+    return output.getvalue()
+
+
+def _pick_first(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def get_secret(key: str, default: str = "") -> str:
+    v = os.getenv(key)
+    if v:
+        return v
+    try:
+        if hasattr(st, "secrets"):
+            return str(st.secrets.get(key, default))
+    except Exception:
+        return default
+    return default
+
+
 def haversine_km(lat1, lon1, lat2, lon2) -> float:
-    """Great-circle distance between two points (km)."""
     R = 6371.0
     p1 = math.radians(lat1)
     p2 = math.radians(lat2)
@@ -68,17 +121,22 @@ def haversine_km(lat1, lon1, lat2, lon2) -> float:
     a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlon / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
 
+
 def density_per_km2(count: int, radius_m: int) -> float:
     area_km2 = math.pi * (radius_m / 1000.0) ** 2
     return (count / area_km2) if area_km2 > 0 else 0.0
 
+
 def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
+
 
 def safe_mean(df: pd.DataFrame, col: str) -> float:
     if df is None or df.empty or col not in df.columns:
         return 0.0
-    return float(df[col].mean())
+    s = pd.to_numeric(df[col], errors="coerce").dropna()
+    return float(s.mean()) if len(s) else 0.0
+
 
 def score_label(val: float) -> str:
     if val < 50:
@@ -86,6 +144,7 @@ def score_label(val: float) -> str:
     elif val < 70:
         return "🟠 Moderate"
     return "🟢 Strong"
+
 
 def pct_label(val01: float) -> str:
     pct = val01 * 100
@@ -95,6 +154,7 @@ def pct_label(val01: float) -> str:
         return "🟠 Medium"
     return "🟢 High"
 
+
 def pressure_label(val: float) -> str:
     if val < 35:
         return "🟢 Low"
@@ -102,18 +162,95 @@ def pressure_label(val: float) -> str:
         return "🟠 Medium"
     return "🔴 High"
 
-def compute_pressure_and_risk(density: float, comp_share: float, avg_score: float) -> tuple[float, float]:
-    """
-    Competitive Pressure (0..100): competition + density-driven intensity.
-    Entry Risk (0..100): pressure + weak quality signals.
-    """
-    dens_n = clamp01(density / 20.0)  # demo scaling
-    comp_n = clamp01(comp_share)      # already 0..1
-    quality_n = clamp01(avg_score / 100.0)
 
+def compute_pressure_and_risk(density: float, comp_share: float, avg_score: float) -> Tuple[float, float]:
+    dens_n = clamp01(density / 20.0)      # demo scaling
+    comp_n = clamp01(comp_share)          # 0..1
+    quality_n = clamp01(avg_score / 100.0)
     pressure = 100.0 * (0.55 * comp_n + 0.45 * dens_n)
     risk = 100.0 * (0.55 * (1.0 - quality_n) + 0.45 * (0.55 * comp_n + 0.45 * dens_n))
     return float(round(pressure, 0)), float(round(risk, 0))
+def _pct_norm(series: pd.Series, p_low=25, p_high=90, default=0.55) -> float:
+    """Normalize a numeric series to 0..1 using percentiles (robust to outliers)."""
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if len(s) < 5:
+        return default
+    lo = np.percentile(s, p_low)
+    hi = np.percentile(s, p_high)
+    if hi <= lo:
+        return default
+    return float(np.clip((s - lo) / (hi - lo), 0, 1).mean())
+
+
+def compute_attractiveness_index(
+    df_in: pd.DataFrame,
+    *,
+    radius_m: int,
+    density_per_km2_val: float,
+    comp_share_val: float,
+    target_density: float = 25.0,
+) -> pd.Series:
+    """
+    Returns a per-row Attractiveness Index (0..100).
+    Uses: distance_m, rating, review_count, is_competitor (if present).
+    """
+    df = df_in.copy()
+
+    # --- Demand (D): from review_count if available ---
+    if "review_count" in df.columns:
+        reviews = np.log1p(pd.to_numeric(df["review_count"], errors="coerce"))
+        D = _pct_norm(reviews, p_low=25, p_high=90, default=0.55)
+    else:
+        D = 0.55
+
+    # --- Accessibility (A): from distance_m ---
+    if "distance_m" in df.columns:
+        dist = pd.to_numeric(df["distance_m"], errors="coerce")
+        A_row = 1.0 - (dist / float(radius_m))
+        A_row = A_row.clip(0, 1).fillna(0.6)
+    else:
+        A_row = pd.Series(0.6, index=df.index)
+
+    # --- Quality (Q): from rating ---
+    if "rating" in df.columns:
+        rating = pd.to_numeric(df["rating"], errors="coerce")
+        Q_row = ((rating - 3.0) / 2.0).clip(0, 1).fillna(0.6)
+    else:
+        Q_row = pd.Series(0.6, index=df.index)
+
+    # --- Competition (C): from density + competitor share ---
+    density_norm = float(np.clip(density_per_km2_val / float(target_density), 0, 1))
+    C = float(np.clip(0.6 * density_norm + 0.4 * float(comp_share_val), 0, 1))
+
+    # Weights
+    wD, wA, wQ = 0.45, 0.25, 0.30
+    wC = 0.70
+
+    base = (wD * D) + (wA * A_row) + (wQ * Q_row)
+    score01 = (base * (1.0 - wC * C)).clip(0, 1)
+
+    return (100.0 * score01).round(1)
+
+def apply_competitor_keywords(df: pd.DataFrame, keywords_csv: str) -> pd.DataFrame:
+    keywords = [k.strip().lower() for k in (keywords_csv or "").split(",") if k.strip()]
+    if not keywords or df is None or df.empty:
+        return df
+
+    name_col = _pick_first(df, ["name", "title", "place_name", "poi_name", "business_name", "entity_name"])
+    if not name_col:
+        return df
+
+    name_l = df[name_col].astype(str).str.lower()
+    hit = pd.Series(False, index=df.index)
+    for k in keywords:
+        hit = hit | name_l.str.contains(k, na=False)
+
+    out = df.copy()
+    if "is_competitor" not in out.columns:
+        out["is_competitor"] = False
+    out["is_competitor"] = out["is_competitor"].astype(bool) | hit
+    return out
+
 
 def opportunity_recommendation(
     opp_index: float,
@@ -123,18 +260,9 @@ def opportunity_recommendation(
     risk_0_100: float,
     avg_score: float,
 ):
-    """
-    Executive-style recommendation based on:
-    - Opportunity index (0..1)
-    - Market density (per km2)
-    - Competitor share (0..1)
-    - Competitive pressure (0..100)
-    - Entry risk (0..100)
-    """
     pct = opp_index * 100.0
     comp_pct = comp_share * 100.0
 
-    # Density bands tuned for demo (avoid calling 3.6/km² "highly saturated")
     if density >= 60:
         saturation_label = "highly saturated"
     elif density >= 15:
@@ -144,7 +272,6 @@ def opportunity_recommendation(
     else:
         saturation_label = "structurally underserved"
 
-    # Market badge (short)
     if pct < 30:
         market_badge = "🔴 High-risk market"
     elif pct < 60:
@@ -181,38 +308,302 @@ def opportunity_recommendation(
         f"Opportunity {pct:.0f}% • Avg score {avg_score:.1f} • Competitor share {comp_pct:.0f}% • "
         f"Density {density:.1f}/km² • Pressure {pressure_0_100:.0f}/100 • Risk {risk_0_100:.0f}/100"
     )
-
     return {"headline": headline, "text": text, "action": action, "basis": basis, "color": color}
 
-def apply_competitor_keywords(df: pd.DataFrame, keywords_csv: str) -> pd.DataFrame:
-    """
-    Mark rows as competitors if 'name' contains any keyword.
-    (In demo data names are generic; in production this becomes powerful.)
-    """
-    keywords = [k.strip().lower() for k in (keywords_csv or "").split(",") if k.strip()]
-    if not keywords or "name" not in df.columns:
+
+# =============================================================================
+# Apify loaders
+# =============================================================================
+def load_apify_dataset_items(dataset_id: str, apify_token: Optional[str], limit: int = 5000) -> pd.DataFrame:
+    dataset_id = (dataset_id or "").strip()
+    if not dataset_id:
+        return pd.DataFrame()
+
+    params = {"clean": "true", "format": "json", "limit": str(limit)}
+    if apify_token:
+        params["token"] = apify_token.strip()
+
+    url = f"https://api.apify.com/v2/datasets/{dataset_id}/items"
+
+    try:
+        r = requests.get(url, params=params, timeout=45)
+        if r.status_code != 200:
+            st.error(f"Apify dataset fetch failed ({r.status_code}): {r.text[:500]}")
+            return pd.DataFrame()
+        data = r.json()
+        if not isinstance(data, list):
+            st.error(f"Unexpected dataset response type: {type(data)}")
+            return pd.DataFrame()
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"Apify dataset fetch exception: {e}")
+        return pd.DataFrame()
+
+
+def load_apify_run(run_id: str, apify_token: str) -> dict:
+    run_id = (run_id or "").strip()
+    if not run_id:
+        return {}
+    url = f"https://api.apify.com/v2/actor-runs/{run_id}"
+    params = {"token": apify_token}
+    try:
+        r = requests.get(url, params=params, timeout=30)
+        if r.status_code != 200:
+            st.error(f"Apify run fetch failed ({r.status_code}): {r.text[:500]}")
+            return {}
+        js = r.json()
+        if isinstance(js, dict) and "data" in js and isinstance(js["data"], dict):
+            return js["data"]
+        return js if isinstance(js, dict) else {}
+    except Exception as e:
+        st.error(f"Apify run fetch exception: {e}")
+        return {}
+
+
+# =============================================================================
+# Schema normalization + mode detection
+# =============================================================================
+def normalize_actor7_schema(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
         return df
-    name_l = df["name"].astype(str).str.lower()
-    hit = pd.Series(False, index=df.index)
-    for k in keywords:
-        hit = hit | name_l.str.contains(k, na=False)
-    df = df.copy()
-    if "is_competitor" not in df.columns:
-        df["is_competitor"] = False
-    df["is_competitor"] = df["is_competitor"] | hit
-    return df
 
-# -----------------------------
-# DEMO DATA GENERATOR (NO CACHING!)
-# -----------------------------
+    out = df.copy()
+
+    # POI schema normalization
+    if "poi_lat" in out.columns and "lat" not in out.columns:
+        out["lat"] = out["poi_lat"]
+    if "poi_lon" in out.columns and "lng" not in out.columns:
+        out["lng"] = out["poi_lon"]
+    if "poi_name" in out.columns and "name" not in out.columns:
+        out["name"] = out["poi_name"]
+
+    # generic alternatives
+    if "latitude" in out.columns and "lat" not in out.columns:
+        out["lat"] = out["latitude"]
+    if "longitude" in out.columns and "lng" not in out.columns:
+        out["lng"] = out["longitude"]
+    if "lon" in out.columns and "lng" not in out.columns:
+        out["lng"] = out["lon"]
+
+    # enforce numeric if present
+    for c in ["lat", "lng", "anchor_lat", "anchor_lon"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    # coverage numeric
+    if "radius_m" in out.columns:
+        out["radius_m"] = pd.to_numeric(out["radius_m"], errors="coerce")
+    if "services_count" in out.columns:
+        out["services_count"] = pd.to_numeric(out["services_count"], errors="coerce").fillna(0)
+
+    # ensure category_id exists (canonical key)
+    if "category_id" in out.columns:
+        out["category_id"] = out["category_id"].astype(str)
+    elif "category" in out.columns:
+        out["category_id"] = out["category"].astype(str)
+    elif "category_name" in out.columns:
+        out["category_id"] = out["category_name"].astype(str)
+
+    # coverage_adequate fallback
+    if "coverage_adequate" not in out.columns and "coverage_status" in out.columns:
+        out["coverage_adequate"] = out["coverage_status"].astype(str).str.lower().eq("adequate")
+
+    return out
+
+
+def detect_dataset_mode(df: pd.DataFrame) -> str:
+    if df is None or df.empty:
+        return "unknown"
+    cols = set(df.columns)
+
+    # Coverage rows
+    if {"services_count", "coverage_status"}.issubset(cols) or "coverage_adequate" in cols:
+        return "coverage"
+
+    # POI rows
+    if {"lat", "lng"}.issubset(cols) or {"poi_lat", "poi_lon"}.issubset(cols):
+        return "poi"
+
+    return "unknown"
+
+
+def compute_center_from_df(df: pd.DataFrame, fallback_lat: float, fallback_lon: float) -> Tuple[float, float]:
+    if df is None or df.empty:
+        return fallback_lat, fallback_lon
+
+    if {"lat", "lng"}.issubset(df.columns):
+        lat_s = pd.to_numeric(df["lat"], errors="coerce").dropna()
+        lon_s = pd.to_numeric(df["lng"], errors="coerce").dropna()
+        if len(lat_s) and len(lon_s):
+            return float(lat_s.mean()), float(lon_s.mean())
+
+    if {"poi_lat", "poi_lon"}.issubset(df.columns):
+        lat_s = pd.to_numeric(df["poi_lat"], errors="coerce").dropna()
+        lon_s = pd.to_numeric(df["poi_lon"], errors="coerce").dropna()
+        if len(lat_s) and len(lon_s):
+            return float(lat_s.mean()), float(lon_s.mean())
+
+    if {"anchor_lat", "anchor_lon"}.issubset(df.columns):
+        lat_s = pd.to_numeric(df["anchor_lat"], errors="coerce").dropna()
+        lon_s = pd.to_numeric(df["anchor_lon"], errors="coerce").dropna()
+        if len(lat_s) and len(lon_s):
+            return float(lat_s.mean()), float(lon_s.mean())
+
+    return fallback_lat, fallback_lon
+
+
+def ensure_distance_m(df: pd.DataFrame, center_lat: float, center_lon: float) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+
+    if "distance_m" in out.columns:
+        out["distance_m"] = pd.to_numeric(out["distance_m"], errors="coerce")
+        return out
+
+    # choose center: if anchor coords exist, use first anchor row as center
+    c_lat, c_lon = center_lat, center_lon
+    if {"anchor_lat", "anchor_lon"}.issubset(out.columns):
+        a_lat_s = pd.to_numeric(out["anchor_lat"], errors="coerce").dropna()
+        a_lon_s = pd.to_numeric(out["anchor_lon"], errors="coerce").dropna()
+        if len(a_lat_s) and len(a_lon_s):
+            c_lat, c_lon = float(a_lat_s.iloc[0]), float(a_lon_s.iloc[0])
+
+    if {"lat", "lng"}.issubset(out.columns):
+        lat_s = pd.to_numeric(out["lat"], errors="coerce")
+        lon_s = pd.to_numeric(out["lng"], errors="coerce")
+
+        def _dist_row(x):
+            try:
+                if pd.isna(x["lat"]) or pd.isna(x["lng"]):
+                    return np.nan
+                return float(haversine_km(c_lat, c_lon, float(x["lat"]), float(x["lng"])) * 1000.0)
+            except Exception:
+                return np.nan
+
+        tmp = pd.DataFrame({"lat": lat_s, "lng": lon_s})
+        out["distance_m"] = tmp.apply(_dist_row, axis=1)
+        return out
+
+    out["distance_m"] = np.nan
+    return out
+
+
+# =============================================================================
+# Category / coverage filtering + unified analysis_df
+# =============================================================================
+def filter_coverage_df(df: pd.DataFrame, *, ui_category: str, radius_m: int) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    work = df.copy()
+
+    # normalize numeric radius + services_count
+    if "radius_m" in work.columns:
+        work["radius_m"] = pd.to_numeric(work["radius_m"], errors="coerce")
+    if "services_count" in work.columns:
+        work["services_count"] = pd.to_numeric(work["services_count"], errors="coerce").fillna(0)
+
+    # filter radius
+    if "radius_m" in work.columns and radius_m is not None:
+        work = work[work["radius_m"] == float(radius_m)].copy()
+
+    wanted = _wanted_category_ids(ui_category)
+    if wanted and "category_id" in work.columns:
+        work = work[work["category_id"].astype(str).isin(wanted)].copy()
+
+    # coverage_adequate fallback
+    if "coverage_adequate" not in work.columns and "coverage_status" in work.columns:
+        work["coverage_adequate"] = work["coverage_status"].astype(str).str.lower().eq("adequate")
+
+    return work.reset_index(drop=True)
+
+
+def category_filter_best_effort(df: pd.DataFrame, ui_category: str) -> pd.DataFrame:
+    """Best-effort POI filtering by category based on available columns."""
+    if df is None or df.empty:
+        return df
+
+    wanted = _wanted_category_ids(ui_category)
+    work = df.copy()
+
+    # Strongest: category_id exact match (actor7 may store it per POI)
+    if "category_id" in work.columns and wanted:
+        m = work["category_id"].astype(str).isin(wanted)
+        if m.any():
+            return work[m].copy()
+
+    # Next: category / type columns containing tokens
+    probe_cols = [c for c in ["category", "categories", "types", "primaryType", "place_types", "category_name"] if c in work.columns]
+    if probe_cols and wanted:
+        wanted_l = [w.lower() for w in wanted] + [(ui_category or "").strip().lower()]
+        mask = pd.Series(False, index=work.index)
+        for c in probe_cols:
+            s = work[c].astype(str).str.lower()
+            for w in wanted_l:
+                if w:
+                    mask = mask | s.str.contains(w, na=False)
+        if mask.any():
+            return work[mask].copy()
+
+    return work
+
+
+def build_analysis_df(
+    df: pd.DataFrame,
+    *,
+    mode: str,
+    category: str,
+    radius_m: int,
+    show_competitors: bool,
+    center_lat: float,
+    center_lon: float,
+) -> pd.DataFrame:
+    """
+    Returns ONE dataframe that the whole app uses for:
+    - total
+    - density
+    - competitor share
+    - table
+    - export
+    So KPIs and tables never disagree.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    work = df.copy()
+
+    if mode == "coverage":
+        work = normalize_actor7_schema(work)
+        work = filter_coverage_df(work, ui_category=category, radius_m=radius_m)
+        if "services_count" in work.columns:
+            work["services_count"] = pd.to_numeric(work["services_count"], errors="coerce").fillna(0)
+        return work.reset_index(drop=True)
+
+    # POI mode
+    work = normalize_actor7_schema(work)
+    work = ensure_distance_m(work, center_lat, center_lon)
+    work = category_filter_best_effort(work, category)
+
+    # radius filter
+    if "distance_m" in work.columns:
+        dist = pd.to_numeric(work["distance_m"], errors="coerce")
+        if dist.notna().any():
+            work = work[dist <= int(radius_m)].copy()
+
+    # competitor filter toggle
+    if not show_competitors and "is_competitor" in work.columns:
+        work = work[work["is_competitor"] == False].copy()
+
+    return work.reset_index(drop=True)
+
+
+# =============================================================================
+# Demo data generator (synthetic)
+# =============================================================================
 def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
-    """
-    Generate synthetic POIs. IMPORTANT: no @st.cache_data decorator here.
-    """
     rng = np.random.default_rng(int(seed))
-
-    # Spread points in a circle around the center
-    r_deg = (radius_m / 1000.0) / 111.0  # approx degrees per km
+    r_deg = (radius_m / 1000.0) / 111.0
     angles = rng.uniform(0, 2 * np.pi, n)
     radii = r_deg * np.sqrt(rng.uniform(0, 1, n))
 
@@ -222,8 +613,6 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     names = [f"{category.title()} #{i+1}" for i in range(n)]
     ratings = np.clip(rng.normal(4.2, 0.35, n), 3.0, 5.0)
     reviews = np.clip(rng.normal(180, 90, n).astype(int), 5, 1200)
-
-    # base competitor probability (demo)
     competitor_flag = rng.choice([True, False], size=n, p=[0.35, 0.65])
 
     df = pd.DataFrame(
@@ -239,13 +628,12 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     )
 
     df["distance_m"] = df.apply(
-        lambda r: int(haversine_km(center_lat, center_lon, r["lat"], r["lng"]) * 1000),
+        lambda r: float(haversine_km(center_lat, center_lon, r["lat"], r["lng"]) * 1000.0),
         axis=1,
     )
 
-    # Composite score (0..100)
-    dist_norm = (df["distance_m"] / float(radius_m)).clip(0, 1)  # 0 close → 1 far
-    rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)        # 3..5 → 0..1
+    dist_norm = (df["distance_m"] / float(radius_m)).clip(0, 1)
+    rating_norm = ((df["rating"] - 3.0) / 2.0).clip(0, 1)
     review_norm = (np.log1p(df["review_count"]) / np.log1p(1200)).clip(0, 1)
 
     rng2 = np.random.default_rng(int(seed) + 999)
@@ -261,14 +649,112 @@ def make_demo_points(center_lat, center_lon, category, radius_m, n, seed=42):
     )
     df["score"] = np.clip(np.round(score), 0, 100).astype(int)
 
-    # Coverage proxy (0..1)
-    df["coverage_pct"] = np.clip((df["score"] / 100) * rng.uniform(0.7, 1.1, n), 0, 1).round(2)
-
     return df.sort_values(["score", "review_count"], ascending=False).reset_index(drop=True)
 
-# -----------------------------
-# PDF (Executive Memo)
-# -----------------------------
+
+# =============================================================================
+# Snapshots
+# =============================================================================
+def build_multi_radius_snapshot_poi(df: pd.DataFrame, radius_list=(300, 500, 1000, 1500, 2000)) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    work = df.copy()
+    if "distance_m" in work.columns:
+        work["distance_m"] = pd.to_numeric(work["distance_m"], errors="coerce")
+
+    rows = []
+    for r in radius_list:
+        sub = work
+        if "distance_m" in sub.columns and sub["distance_m"].notna().any():
+            sub = sub[sub["distance_m"] <= int(r)]
+
+        tot = int(len(sub))
+        avg_score_r = safe_mean(sub, "score")
+        avg_rating_r = safe_mean(sub, "rating")
+        density_r = density_per_km2(tot, int(r))
+        comp_share_r = float(sub["is_competitor"].mean()) if tot and "is_competitor" in sub.columns else 0.0
+        opp_r = clamp01((avg_score_r / 100.0) * (1.0 - comp_share_r))
+        pressure_r, risk_r = compute_pressure_and_risk(density_r, comp_share_r, avg_score_r)
+
+        rows.append(
+            {
+                "Radius (m)": int(r),
+                "Results": tot,
+                "Avg Score": round(avg_score_r, 1),
+                "Avg Rating": round(avg_rating_r, 2),
+                "Density (/km²)": round(density_r, 1),
+                "Competitor %": int(round(comp_share_r * 100, 0)),
+                "Opportunity %": int(round(opp_r * 100, 0)),
+                "Pressure": int(round(pressure_r, 0)),
+                "Risk": int(round(risk_r, 0)),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_multi_radius_snapshot_coverage(df: pd.DataFrame, *, category: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(
+            [{"Radius (m)": r, "Results": 0, "Density (/km²)": 0.0, "Opportunity %": 100.0, "Pressure": 0.0, "Risk": 55.0}
+             for r in [300, 500, 1000, 1500, 2000]]
+        )
+
+    work = normalize_actor7_schema(df).copy()
+
+    if "radius_m" in work.columns:
+        work["radius_m"] = pd.to_numeric(work["radius_m"], errors="coerce")
+    if "services_count" in work.columns:
+        work["services_count"] = pd.to_numeric(work["services_count"], errors="coerce").fillna(0)
+
+    if "coverage_adequate" not in work.columns and "coverage_status" in work.columns:
+        work["coverage_adequate"] = work["coverage_status"].astype(str).str.lower().eq("adequate")
+
+    wanted = _wanted_category_ids(category)
+    if wanted and "category_id" in work.columns:
+        work = work[work["category_id"].astype(str).isin(wanted)]
+
+    radii = sorted({int(x) for x in work["radius_m"].dropna().tolist()}) if "radius_m" in work.columns else []
+    if not radii:
+        radii = [300, 500, 1000, 1500, 2000]
+
+    rows = []
+    for r in radii:
+        sub = work[work["radius_m"] == float(r)] if "radius_m" in work.columns else work
+
+        results = int(pd.to_numeric(sub.get("services_count", 0), errors="coerce").fillna(0).sum()) if len(sub) else 0
+
+        # Density fix fallback: if results==0 but nearest_distance_m says at least one inside radius
+        if results == 0 and len(sub) and "nearest_distance_m" in sub.columns:
+            nd = pd.to_numeric(sub["nearest_distance_m"], errors="coerce").dropna()
+            if len(nd) and float(nd.min()) <= float(r):
+                results = 1
+
+        dens = density_per_km2(int(results), int(r))
+        opp = 1.0 if results == 0 else float(1.0 / (1.0 + dens))
+        opp_pct = 100.0 * opp
+
+        # Simple pressure/risk proxies (coverage mode lacks POI quality fields)
+        pressure = float(100.0 * (dens / (dens + 50.0))) if results > 0 else 0.0
+        risk = 55.0 if results == 0 else max(15.0, 55.0 - min(40.0, results * 2.0))
+
+        rows.append(
+            {
+                "Radius (m)": int(r),
+                "Results": int(results),
+                "Density (/km²)": round(dens, 2),
+                "Opportunity %": round(opp_pct, 0),
+                "Pressure": round(pressure, 0),
+                "Risk": round(risk, 0),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+# =============================================================================
+# PDF builder (Executive Memo)
+# =============================================================================
 def build_executive_memo_pdf(
     *,
     city: str,
@@ -286,6 +772,7 @@ def build_executive_memo_pdf(
     rec: dict,
     snapshot_df: pd.DataFrame,
     top_df: pd.DataFrame,
+    is_coverage: bool,
 ) -> bytes:
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -302,9 +789,7 @@ def build_executive_memo_pdf(
     title_style = ParagraphStyle("Title2", parent=styles["Title"], fontSize=16, leading=20, spaceAfter=10)
     h_style = ParagraphStyle("H", parent=styles["Heading2"], fontSize=12, leading=15, spaceBefore=10, spaceAfter=6)
     body = ParagraphStyle("Body2", parent=styles["BodyText"], fontSize=10, leading=14)
-    muted = ParagraphStyle(
-        "Muted", parent=styles["BodyText"], fontSize=9, leading=12, textColor=colors.HexColor("#666666")
-    )
+    muted = ParagraphStyle("Muted", parent=styles["BodyText"], fontSize=9, leading=12, textColor=colors.HexColor("#666666"))
 
     story = []
     story.append(Paragraph("Location Intelligence — Executive Memo", title_style))
@@ -319,20 +804,21 @@ def build_executive_memo_pdf(
     story.append(Spacer(1, 8))
 
     story.append(Paragraph("Key Metrics", h_style))
+
     kpi_data = [
         ["Results", "Avg Score", "Avg Rating", "Density (/km²)", "Opportunity", "Competitor Share", "Pressure", "Risk"],
         [
-            str(total),
-            f"{avg_score:.1f}/100",
-            f"{avg_rating:.2f}",
-            f"{density:.1f}",
-            f"{opp_index * 100:.0f}%",
-            f"{comp_share * 100:.0f}%",
-            f"{pressure_0_100:.0f}/100",
-            f"{risk_0_100:.0f}/100",
+            str(int(total)),
+            f"{float(avg_score):.1f}/100",
+            "—" if is_coverage else f"{float(avg_rating):.2f}",
+            f"{float(density):.1f}",
+            f"{float(opp_index) * 100:.0f}%",
+            f"{float(comp_share) * 100:.0f}%",
+            f"{float(pressure_0_100):.0f}/100",
+            f"{float(risk_0_100):.0f}/100",
         ],
     ]
-    t = Table(kpi_data, colWidths=[22*mm, 24*mm, 22*mm, 26*mm, 22*mm, 30*mm, 22*mm, 18*mm])
+    t = Table(kpi_data, colWidths=[22 * mm, 24 * mm, 22 * mm, 26 * mm, 22 * mm, 30 * mm, 22 * mm, 18 * mm])
     t.setStyle(
         TableStyle(
             [
@@ -363,10 +849,9 @@ def build_executive_memo_pdf(
         story.append(Spacer(1, 12))
         story.append(Paragraph("Multi-radius Snapshot", h_style))
         snap = snapshot_df.copy()
-        snap_cols = list(snap.columns)
-        snap_data = [snap_cols] + snap.astype(str).values.tolist()
-        col_w = [18*mm, 20*mm, 18*mm, 20*mm, 20*mm, 24*mm, 22*mm, 22*mm, 18*mm, 16*mm]
-        col_w = col_w[: len(snap_cols)]
+        cols = list(snap.columns)
+        snap_data = [cols] + snap.astype(str).values.tolist()
+        col_w = [max(18 * mm, int(180 * mm / max(1, len(cols))))] * len(cols)
         tt = Table(snap_data, colWidths=col_w)
         tt.setStyle(
             TableStyle(
@@ -385,22 +870,23 @@ def build_executive_memo_pdf(
 
     if top_df is not None and not top_df.empty:
         story.append(Spacer(1, 12))
-        story.append(Paragraph("Top Results (Top 10)", h_style))
-        cols = [c for c in ["name", "rating", "review_count", "distance_m", "score", "is_competitor"] if c in top_df.columns]
-        tdf = top_df[cols].copy()
-        tdf["name"] = tdf["name"].astype(str).str.slice(0, 38)
-        tdf = tdf.head(10)
+        story.append(Paragraph("Priority rows (Top 10)" if is_coverage else "Top results (Top 10)", h_style))
+
+        if is_coverage:
+            cols = [c for c in ["anchor_name", "radius_m", "category_name", "services_count", "nearest_distance_m", "coverage_status"] if c in top_df.columns]
+            if not cols:
+                cols = list(top_df.columns)
+            tdf = top_df[cols].copy().head(10)
+        else:
+            cols = [c for c in ["name", "rating", "review_count", "distance_m", "score", "is_competitor"] if c in top_df.columns]
+            if not cols:
+                cols = list(top_df.columns)
+            tdf = top_df[cols].copy().head(10)
+            if "name" in tdf.columns:
+                tdf["name"] = tdf["name"].astype(str).str.slice(0, 40)
 
         top_data = [cols] + tdf.astype(str).values.tolist()
-        top_col_w = []
-        for c in cols:
-            if c == "name":
-                top_col_w.append(62 * mm)
-            elif c in ("review_count", "distance_m"):
-                top_col_w.append(24 * mm)
-            else:
-                top_col_w.append(20 * mm)
-
+        top_col_w = [max(18 * mm, int(180 * mm / max(1, len(cols))))] * len(cols)
         top_table = Table(top_data, colWidths=top_col_w)
         top_table.setStyle(
             TableStyle(
@@ -409,7 +895,7 @@ def build_executive_memo_pdf(
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D1D5DB")),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                     ("FONTSIZE", (0, 0), (-1, -1), 8),
-                    ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                     ("BOTTOMPADDING", (0, 0), (-1, 0), 5),
                     ("TOPPADDING", (0, 0), (-1, 0), 5),
@@ -419,194 +905,15 @@ def build_executive_memo_pdf(
         story.append(top_table)
 
     story.append(Spacer(1, 12))
-    story.append(
-        Paragraph(
-            "Note: Demo-mode signals are illustrative. In production, connect to live POI sources and your competitor definitions.",
-            muted,
-        )
-    )
+    story.append(Paragraph("Note: Signals are illustrative; validate with your own competitive definitions and local knowledge.", muted))
 
     doc.build(story)
     return buf.getvalue()
 
-# -----------------------------
-# Multi-radius snapshot (NO caching!)
-# -----------------------------
-def build_multi_radius_snapshot(
-    center_lat: float,
-    center_lon: float,
-    category: str,
-    n_points: int,
-    base_seed: int,
-    competitor_keywords_csv: str,
-    include_competitors: bool,
-    demo_density_mode: str,
-    radii=(300, 500, 1000, 1500, 2000),
-) -> pd.DataFrame:
-    """
-    Snapshot modes:
-    1) Constant N: same generated N for each radius → density changes with radius (obvious)
-    2) Constant density: generated N scales with area → density ~constant (baseline comparison)
-    3) Market gradient: density varies by radius (more realistic “CBD vs outskirts” vibe)
 
-    Fixes:
-    - 300/500 no longer freeze at the hard min (10)
-    - 1500/2000 no longer both hit the same hard max (350)
-    - "Generated N" varies naturally, and "Results" can differ slightly (drop-rate)
-    """
-    rows = []
-    base_r = 1000  # reference radius for n_points
-
-    for r in radii:
-        # Strong per-radius seed
-        dynamic_seed = abs(hash((center_lat, center_lon, category, r, n_points, base_seed))) % (10**9)
-        rng = np.random.default_rng(dynamic_seed)
-
-        # -----------------------------
-        # 1) Compute baseline expected N
-        # -----------------------------
-        if demo_density_mode.startswith("Constant N"):
-            base_n = float(n_points)
-
-        elif demo_density_mode.startswith("Constant density"):
-            base_n = float(n_points) * (r / base_r) ** 2
-
-        else:
-            # Market gradient: higher density close-in, lower further out
-            gradient = (base_r / float(r)) ** 0.7  # 300m bigger, 2000m smaller
-            base_n = float(n_points) * (r / base_r) ** 2 * gradient
-
-        # -----------------------------
-        # 2) Add noise WITHOUT “small-radius freeze” or “big-radius ceiling ties”
-        #    (Poisson repeats too often for small lambdas; use normal here)
-        # -----------------------------
-        sigma = max(2.0, base_n * 0.18)
-        noisy_n = int(round(rng.normal(loc=base_n, scale=sigma)))
-
-        # -----------------------------
-        # 3) Radius-aware bounds (instead of hard 10..350)
-        # -----------------------------
-        min_n = max(6, int(round(n_points * 0.10)))  # not always 10
-        # max grows with radius & base_n (prevents 1500/2000 both capping)
-        max_n = int(round(max(base_n * 2.2, n_points * (r / base_r) ** 2 * 3.0)))
-        max_n = max(max_n, min_n + 12)
-
-        scaled_n = int(np.clip(noisy_n, min_n, max_n))
-
-        # -----------------------------
-        # 4) Generate data
-        # -----------------------------
-        dfr = make_demo_points(center_lat, center_lon, category, r, scaled_n, seed=dynamic_seed)
-        dfr = apply_competitor_keywords(dfr, competitor_keywords_csv)
-
-        if not include_competitors and "is_competitor" in dfr.columns:
-            dfr = dfr[dfr["is_competitor"] == False].reset_index(drop=True)
-
-        # OPTIONAL realism: let Results differ from Generated N a bit
-        # (simulate dedupe/invalids/filter fallout)
-        drop_rate = float(rng.uniform(0.03, 0.12))
-        keep_frac = max(0.75, 1.0 - drop_rate)  # never drop too much
-        dfr = dfr.sample(frac=keep_frac, random_state=int(dynamic_seed % (2**32 - 1))).reset_index(drop=True)
-
-        # -----------------------------
-        # 5) Metrics
-        # -----------------------------
-        tot = len(dfr)
-        avg_score_r = safe_mean(dfr, "score")
-        avg_rating_r = safe_mean(dfr, "rating")
-        density_r = density_per_km2(tot, r)
-        comp_share_r = float(dfr["is_competitor"].mean()) if tot and "is_competitor" in dfr.columns else 0.0
-
-        opp_r = clamp01((avg_score_r / 100.0) * (1.0 - comp_share_r))
-        pressure_r, risk_r = compute_pressure_and_risk(density_r, comp_share_r, avg_score_r)
-
-        rows.append(
-            {
-                "Radius (m)": r,
-                "Generated N": int(scaled_n),
-                "Results": int(tot),
-                "Avg Score": round(avg_score_r, 1),
-                "Avg Rating": round(avg_rating_r, 2),
-                "Density (/km²)": round(density_r, 1),
-                "Competitor %": int(round(comp_share_r * 100, 0)),
-                "Opportunity %": int(round(opp_r * 100, 0)),
-                "Pressure": int(round(pressure_r, 0)),
-                "Risk": int(round(risk_r, 0)),
-            }
-        )
-
-    return pd.DataFrame(rows)
-
-
-# -----------------------------
-# Optional: Apify fetch helpers (cached is OK here)
-# -----------------------------
-@st.cache_data(show_spinner=False, ttl=60)
-def apify_fetch_run(run_id: str, token: str):
-    if ApifyClient is None:
-        raise RuntimeError("apify-client not installed. Add apify-client to requirements.txt")
-    client = ApifyClient(token)
-    return client.run(run_id).get()
-
-@st.cache_data(show_spinner=False, ttl=60)
-def apify_fetch_kv_json(store_id: str, key: str, token: str):
-    if ApifyClient is None:
-        raise RuntimeError("apify-client not installed. Add apify-client to requirements.txt")
-    client = ApifyClient(token)
-    rec = client.key_value_store(store_id).get_record(key)
-    return (rec or {}).get("value")
-
-@st.cache_data(show_spinner=False, ttl=60)
-@st.cache_data(show_spinner=False, ttl=60)
-def apify_fetch_dataset_items(dataset_id: str, token: str, limit: int = 5000) -> pd.DataFrame:
-    if ApifyClient is None:
-        raise RuntimeError("apify-client not installed. Add apify-client to requirements.txt")
-
-    client = ApifyClient(token)
-    items: list = []
-    offset = 0
-    page_limit = 1000
-
-    while True:
-        resp = client.dataset(dataset_id).list_items(limit=page_limit, offset=offset)
-
-        # --- Normalize response across apify-client versions ---
-        if resp is None:
-            batch = []
-
-        # Newer/older versions may return dict-like payload
-        elif isinstance(resp, dict):
-            batch = resp.get("items") or resp.get("data") or []
-
-        # Some versions return an object with `.items`
-        elif hasattr(resp, "items") and not isinstance(resp, list):
-            batch = getattr(resp, "items") or []
-
-        # Some versions may return list directly
-        else:
-            batch = resp
-
-        # Safety: ensure batch is a list
-        if batch is None:
-            batch = []
-        elif isinstance(batch, dict):
-            batch = [batch]
-        else:
-            batch = list(batch)
-
-        items.extend(batch)
-
-        # Stop conditions
-        if len(batch) < page_limit or len(items) >= limit:
-            break
-
-        offset += page_limit
-
-    return pd.DataFrame(items[:limit])
-
-# -----------------------------
+# =============================================================================
 # Sidebar controls
-# -----------------------------
+# =============================================================================
 st.sidebar.header("Analysis Parameters")
 
 preset = st.sidebar.selectbox(
@@ -624,49 +931,31 @@ city_map = {
 city = city_map.get(preset, preset)
 st.sidebar.caption(f"City / Area label: {city}")
 
-
-# Auto-sync city label with preset
-city_map = {
-    "Los Angeles (Downtown)": "Los Angeles, CA",
-    "Washington, DC": "Washington, DC",
-    "New York (Midtown)": "New York, NY",
-    "Berlin (Mitte)": "Berlin, Germany",
-}
-
-city = city_map.get(preset, preset)
-
-
-
-
-category = st.sidebar.selectbox("Category", ["pharmacy", "restaurant", "hospital", "school", "grocery"])
+category = st.sidebar.selectbox("Category", list(UI_TO_ACTOR_CATEGORY_IDS.keys()), index=0)
 radius_m = st.sidebar.selectbox("Radius (meters)", [300, 500, 1000, 1500, 2000], index=2)
-n_points = st.sidebar.slider("Base # results @ 1000m", 10, 120, 45, step=5)
+n_points = st.sidebar.slider("Base # results @ 1000m (demo)", 10, 120, 45, step=5)
 
 st.sidebar.divider()
 st.sidebar.subheader("Competitor Definition (optional)")
 competitor_keywords_csv = st.sidebar.text_input("Competitor keywords (comma-separated)", "")
-
 show_competitors = st.sidebar.checkbox("Include competitors", value=True)
 
 st.sidebar.divider()
-st.sidebar.subheader("Export")
-export_name = st.sidebar.text_input("CSV file name", "location_intelligence_export.csv")
-
-# Optional: data source (Demo vs Apify)
-st.sidebar.divider()
 st.sidebar.subheader("Data source")
-data_mode = st.sidebar.radio(
-    "Choose data source",
-    ["Demo (synthetic)", "Apify Run ID", "Apify Dataset ID"],
-    index=0,
-)
-apify_token = (st.secrets.get("APIFY_TOKEN", "") if hasattr(st, "secrets") else "") or os.getenv("APIFY_TOKEN", "")
+data_mode = st.sidebar.radio("Choose data source", ["Demo (synthetic)", "Apify Run ID", "Apify Dataset ID"], index=0)
+
+apify_token = get_secret("APIFY_TOKEN", "")
 run_id = ""
 dataset_id = ""
+
 if data_mode == "Apify Run ID":
     run_id = st.sidebar.text_input("Apify Run ID", "")
 elif data_mode == "Apify Dataset ID":
     dataset_id = st.sidebar.text_input("Apify Dataset ID", "")
+
+st.sidebar.divider()
+debug_raw = st.sidebar.checkbox("Debug: show raw dataset head", value=False)
+debug_density = st.sidebar.checkbox("Debug: density inputs", value=False)
 
 st.sidebar.divider()
 st.sidebar.subheader("Refresh")
@@ -674,7 +963,6 @@ if "demo_nonce" not in st.session_state:
     st.session_state["demo_nonce"] = 0
 if st.sidebar.button("🔄 Regenerate demo data"):
     st.session_state["demo_nonce"] += 1
-    # This clears apify caches too; that's ok for demo/troubleshooting.
     st.cache_data.clear()
 
 centers = {
@@ -683,90 +971,154 @@ centers = {
     "New York (Midtown)": (40.754932, -73.984016),
     "Berlin (Mitte)": (52.520008, 13.404954),
 }
-center_lat, center_lon = centers[preset]
-
-st.sidebar.subheader("Demo realism")
-demo_density_mode = st.sidebar.radio(
-    "Demo mode behavior",
-    ["Constant N (density changes with radius)", "Constant density (N scales with area)", "Market gradient (density varies by radius)"],
-    index=1,
-)
-
-# Seed must change with parameters + nonce (prevents "frozen" snapshot)
+fallback_center_lat, fallback_center_lon = centers[preset]
 seed = abs(hash((preset, city, category, radius_m, n_points, st.session_state["demo_nonce"]))) % (10**6)
 
-# -----------------------------
-# Data
-# -----------------------------
-summary = None
 
+# =============================================================================
+# Data load
+# =============================================================================
 if data_mode == "Demo (synthetic)":
-    df = make_demo_points(center_lat, center_lon, category, radius_m, n_points, seed=seed)
+    # Build ONE master demo dataset at max radius (so snapshot + KPIs are consistent)
+    max_r = 2000
+
+    # Keep density roughly comparable: n_points means "around 1000m"
+    # Area scales ~ r^2, so scale total points accordingly
+    n_master = int(round(n_points * (max_r / 1000.0) ** 2))
+    n_master = max(20, min(5000, n_master))
+
+    df = make_demo_points(
+        fallback_center_lat,
+        fallback_center_lon,
+        category,
+        max_r,
+        n_master,
+        seed=seed,
+    )
     df = apply_competitor_keywords(df, competitor_keywords_csv)
 else:
     if not apify_token:
-        st.error("Missing APIFY_TOKEN. Add it in Streamlit secrets.")
+        st.error("Missing APIFY_TOKEN. Add it in Streamlit secrets (or env var APIFY_TOKEN).")
         st.stop()
 
     if data_mode == "Apify Run ID":
         if not run_id.strip():
             st.info("Enter an Apify Run ID to load results.")
             st.stop()
-        run = apify_fetch_run(run_id.strip(), apify_token)
+        run = load_apify_run(run_id.strip(), apify_token)
         dataset_id = (run.get("defaultDatasetId") or "").strip()
-        store_id = (run.get("defaultKeyValueStoreId") or "").strip()
-        if store_id:
-            summary = apify_fetch_kv_json(store_id, "RUN_SUMMARY.json", apify_token)
 
     if not (dataset_id or "").strip():
-        st.error("Could not resolve dataset ID. Provide a valid Dataset ID or Run ID.")
+        st.error("Provide a valid Apify Dataset ID (or a Run ID that resolves to one).")
         st.stop()
 
-    df = apify_fetch_dataset_items(dataset_id.strip(), apify_token, limit=5000)
-
-    # normalize expected columns
-    rename_map = {}
-    if "latitude" in df.columns and "lat" not in df.columns:
-        rename_map["latitude"] = "lat"
-    if "longitude" in df.columns and "lng" not in df.columns:
-        rename_map["longitude"] = "lng"
-    if rename_map:
-        df = df.rename(columns=rename_map)
-
+    df = load_apify_dataset_items(dataset_id.strip(), apify_token, limit=5000)
+    df = normalize_actor7_schema(df)
     df = apply_competitor_keywords(df, competitor_keywords_csv)
 
-# Ensure expected columns exist (robust)
-defaults = {
-    "name": "",
-    "category": category,
-    "lat": np.nan,
-    "lng": np.nan,
-    "rating": 0.0,
-    "review_count": 0,
-    "distance_m": 0,
-    "score": 0,
-    "is_competitor": False,
-}
-for col, default in defaults.items():
-    if col not in df.columns:
-        df[col] = default
+mode = detect_dataset_mode(df)
 
-# Apply competitor toggle
-if not show_competitors and "is_competitor" in df.columns:
-    df = df[df["is_competitor"] == False].reset_index(drop=True)
+data_center_lat, data_center_lon = compute_center_from_df(df, fallback_center_lat, fallback_center_lon)
 
-total = len(df)
-avg_score = safe_mean(df, "score")
-avg_rating = safe_mean(df, "rating")
-density = density_per_km2(total, radius_m)
-comp_share = float(df["is_competitor"].mean()) if total and "is_competitor" in df.columns else 0.0
+if debug_raw:
+    st.write("Columns:", [] if df is None else df.columns.tolist())
+    st.dataframe(df.head(30) if df is not None else pd.DataFrame(), use_container_width=True)
 
-opp_index = clamp01((avg_score / 100.0) * (1.0 - comp_share))
-pressure_0_100, risk_0_100 = compute_pressure_and_risk(density, comp_share, avg_score)
 
-# -----------------------------
-# Header (Professional positioning)
-# -----------------------------
+# =============================================================================
+# KPI compute (coverage vs poi) — STABLE (density + competitor% + snapshot/export aligned)
+# =============================================================================
+is_coverage = mode == "coverage"
+
+analysis_df = build_analysis_df(
+    df,
+    mode=mode,
+    category=category,
+    radius_m=radius_m,
+    show_competitors=show_competitors,
+    center_lat=data_center_lat,
+    center_lon=data_center_lon,
+)
+
+# Debug
+st.sidebar.write("DEBUG mode:", mode)
+st.sidebar.write("DEBUG analysis rows:", 0 if analysis_df is None else len(analysis_df))
+if analysis_df is not None and "distance_m" in analysis_df.columns:
+    dist_num = pd.to_numeric(analysis_df["distance_m"], errors="coerce")
+    st.sidebar.write("DEBUG distance_m NaN %:", float(dist_num.isna().mean()))
+
+# Defaults
+total = 0
+density = 0.0
+comp_share = 0.0
+avg_score = 0.0
+avg_rating = 0.0
+opp_index = 1.0 if is_coverage else 0.0
+pressure_0_100, risk_0_100 = 0.0, 55.0
+
+if analysis_df is not None and not analysis_df.empty:
+    if is_coverage:
+        sc = pd.to_numeric(analysis_df.get("services_count", 0), errors="coerce").fillna(0)
+        total = int(sc.sum())
+
+        # Density fallback: services_count==0 but nearest_distance_m suggests at least 1 within radius
+        if total == 0 and "nearest_distance_m" in analysis_df.columns:
+            nd = pd.to_numeric(analysis_df["nearest_distance_m"], errors="coerce").dropna()
+            if len(nd) and float(nd.min()) <= float(radius_m):
+                total = 1
+
+        density = density_per_km2(total, int(radius_m))
+
+        if "competitor_share" in analysis_df.columns:
+            cs = pd.to_numeric(analysis_df["competitor_share"], errors="coerce").fillna(0)
+            comp_share = float(cs.max())
+            comp_share = comp_share / 100.0 if comp_share > 1.0 else comp_share
+        else:
+            comp_share = 0.0
+
+        adequate_any = False
+        if "coverage_adequate" in analysis_df.columns:
+            adequate_any = bool(analysis_df["coverage_adequate"].astype(bool).any())
+
+        avg_score = 100.0 if adequate_any else 0.0
+        avg_rating = 0.0
+
+        opp_index = 1.0 if total == 0 else float(1.0 / (1.0 + density))
+        pressure_0_100, risk_0_100 = compute_pressure_and_risk(density, comp_share, avg_score)
+
+        if debug_density:
+            cols = [c for c in ["radius_m", "category_id", "category_name", "services_count", "nearest_distance_m", "competitor_share"] if c in analysis_df.columns]
+            if cols:
+                st.sidebar.dataframe(analysis_df[cols].head(12), use_container_width=True)
+            st.sidebar.write("DEBUG total (sum services_count):", total)
+            st.sidebar.write("DEBUG density:", density)
+    else:
+        total = int(len(analysis_df))
+        density = density_per_km2(total, int(radius_m))
+
+        comp_share = float(analysis_df["is_competitor"].mean()) if total and "is_competitor" in analysis_df.columns else 0.0
+
+        score_sum = pd.to_numeric(analysis_df.get("score", 0), errors="coerce").fillna(0).sum() if "score" in analysis_df.columns else 0
+        if "score" not in analysis_df.columns or score_sum == 0:
+            density_score = 90 - min(80, density * 2.0)
+            comp_penalty = comp_share * 40.0
+            fallback_score = max(10.0, min(90.0, density_score - comp_penalty))
+            analysis_df["score"] = float(fallback_score)
+
+        rating_sum = pd.to_numeric(analysis_df.get("rating", 0), errors="coerce").fillna(0).sum() if "rating" in analysis_df.columns else 0
+        if "rating" not in analysis_df.columns or rating_sum == 0:
+            analysis_df["rating"] = 3.5
+
+        avg_score = safe_mean(analysis_df, "score")
+        avg_rating = safe_mean(analysis_df, "rating")
+
+        opp_index = clamp01((avg_score / 100.0) * (1.0 - comp_share))
+        pressure_0_100, risk_0_100 = compute_pressure_and_risk(density, comp_share, avg_score)
+
+
+# =============================================================================
+# Header
+# =============================================================================
 st.markdown(
     f"""
 <div class="card">
@@ -781,7 +1133,7 @@ st.markdown(
 
   <div class="muted" style="margin-top:6px;">
     Executive-ready micro-market screening for <b>site selection</b>, <b>retail strategy</b>, and <b>feasibility briefs</b>.
-    Anchor: <b>{preset}</b> • Category: <b>{category}</b> • Radius: <b>{radius_m}m</b>
+    Data source: <b>{data_mode}</b> • Mode: <b>{mode}</b> • Category: <b>{category}</b> • Radius: <b>{radius_m}m</b>
   </div>
 </div>
 """,
@@ -789,38 +1141,38 @@ st.markdown(
 )
 st.write("")
 
-# -----------------------------
+
+# =============================================================================
 # Tabs
-# -----------------------------
+# =============================================================================
 tab_overview, tab_results, tab_method = st.tabs(["📌 Overview", "📋 Results", "🧠 Method"])
 
+# Pre-compute recommendation (used in Overview + PDF)
+rec = opportunity_recommendation(
+    opp_index=opp_index,
+    density=density,
+    comp_share=comp_share,
+    pressure_0_100=pressure_0_100,
+    risk_0_100=risk_0_100,
+    avg_score=avg_score,
+)
+
 with tab_overview:
-    # KPI row 1
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Results", total)
+    c1.metric("Results", int(total))
     c2.metric("Avg Score", f"{avg_score:.1f}/100", score_label(avg_score))
-    c3.metric("Avg Rating", f"{avg_rating:.2f}⭐")
+    c3.metric("Avg Rating", "—" if is_coverage else f"{avg_rating:.2f}⭐")
     c4.metric("Density (/km²)", f"{density:.1f}")
     c5.metric("Opportunity", f"{opp_index * 100:.0f}%", pct_label(opp_index))
 
-    # KPI row 2
     st.write("")
     k1, k2, k3 = st.columns(3)
     k1.metric("Competitive Pressure", f"{pressure_0_100:.0f}/100", pressure_label(pressure_0_100))
     k2.metric("Entry Risk", f"{risk_0_100:.0f}/100", pressure_label(risk_0_100))
     k3.metric("Competitor Share", f"{comp_share * 100:.0f}%")
 
-    # Executive Insight
     st.write("")
     st.markdown("### Executive Insight")
-    rec = opportunity_recommendation(
-        opp_index=opp_index,
-        density=density,
-        comp_share=comp_share,
-        pressure_0_100=pressure_0_100,
-        risk_0_100=risk_0_100,
-        avg_score=avg_score,
-    )
 
     st.markdown(
         f"""
@@ -850,23 +1202,25 @@ with tab_overview:
         unsafe_allow_html=True,
     )
 
-    # Multi-radius snapshot (always recompute; no caching)
     st.write("")
-    st.markdown("### Multi-radius snapshot")
-    snap = build_multi_radius_snapshot(
-        center_lat=center_lat,
-        center_lon=center_lon,
-        category=category,
-        n_points=n_points,
-        base_seed=seed,
-        competitor_keywords_csv=competitor_keywords_csv,
-        include_competitors=show_competitors,
-        demo_density_mode=demo_density_mode,
-    )
+    st.markdown("### Snapshot")
+
+
+
+    if data_mode == "Demo (synthetic)":
+        # IMPORTANT: use the SAME master df (generated once at load time)
+        # so Snapshot matches the Overview KPIs for the selected radius.
+        snap = build_multi_radius_snapshot_poi(df, radius_list=(300, 500, 1000, 1500, 2000))
+
+    elif is_coverage:
+        snap = build_multi_radius_snapshot_coverage(df, category=category)  # keep full df for multi-radius
+
+    else:
+        snap = build_multi_radius_snapshot_poi(df)  # keep full df for multi-radius
+
 
     st.dataframe(snap, use_container_width=True, height=240)
 
-    # Business value + map
     st.write("")
     left, right = st.columns([1.15, 1])
 
@@ -874,9 +1228,9 @@ with tab_overview:
         st.markdown("### Business value")
         st.markdown(
             """
-- **Market saturation signal:** density + competitor share to gauge crowded vs underserved areas  
-- **Benchmarking:** compare categories, radii, and zones consistently  
-- **Decision support:** export-ready reporting for **site selection**, **retail strategy**, and **investment memos**  
+- **Market saturation signal:** density + competitor share to gauge crowded vs underserved areas
+- **Benchmarking:** compare categories, radii, and zones consistently
+- **Decision support:** export-ready reporting for **site selection**, **retail strategy**, and **investment memos**
 - **Stakeholder-friendly:** KPIs + map + downloadable dataset for quick review
 """
         )
@@ -884,140 +1238,189 @@ with tab_overview:
         st.markdown("### Quick actions")
         st.markdown(
             """
-- Change **Category** and **Radius** in the sidebar  
-- (Optional) add **Competitor keywords** to define competition  
-- Toggle **Include competitors** to see KPI impact  
-- Use **Download CSV** for reporting-ready output
+- Change **Category** and **Radius** in the sidebar
+- (Optional) add **Competitor keywords** to define competition
+- Toggle **Include competitors** to see KPI impact
+- Use exports in the **Results** tab for reporting-ready output
 """
         )
 
-        if data_mode != "Demo (synthetic)" and summary:
-            st.write("")
-            st.markdown("### Run summary (from Actor)")
-            st.json(summary)
+        if data_mode != "Demo (synthetic)":
+            st.info("Apify mode: Dataset/Run decides the real location. Area preset changes labels only.")
 
     with right:
         st.markdown("### Map preview")
-        if total and {"lat", "lng"}.issubset(df.columns):
-            map_df = df[["lat", "lng"]].rename(columns={"lat": "latitude", "lng": "longitude"}).dropna()
+
+        # Prefer plotting analysis_df if it has coords; else fallback to raw df
+        map_source = analysis_df if (analysis_df is not None and not analysis_df.empty) else df
+
+        has_poi_coords = (
+            map_source is not None
+            and not map_source.empty
+            and {"lat", "lng"}.issubset(map_source.columns)
+            and pd.to_numeric(map_source["lat"], errors="coerce").notna().any()
+            and pd.to_numeric(map_source["lng"], errors="coerce").notna().any()
+        )
+
+        has_anchor_coords = (
+            df is not None
+            and not df.empty
+            and {"anchor_lat", "anchor_lon"}.issubset(df.columns)
+            and pd.to_numeric(df["anchor_lat"], errors="coerce").notna().any()
+            and pd.to_numeric(df["anchor_lon"], errors="coerce").notna().any()
+        )
+
+        if has_poi_coords:
+            map_df = map_source[["lat", "lng"]].copy()
+            map_df["latitude"] = pd.to_numeric(map_df["lat"], errors="coerce")
+            map_df["longitude"] = pd.to_numeric(map_df["lng"], errors="coerce")
+            map_df = map_df[["latitude", "longitude"]].dropna()
+            if len(map_df) > 2000:
+                map_df = map_df.sample(n=2000, random_state=42)
             st.map(map_df, zoom=12)
+
+        elif has_anchor_coords:
+            a_lat = float(pd.to_numeric(df["anchor_lat"], errors="coerce").dropna().iloc[0])
+            a_lon = float(pd.to_numeric(df["anchor_lon"], errors="coerce").dropna().iloc[0])
+            st.map(pd.DataFrame({"latitude": [a_lat], "longitude": [a_lon]}), zoom=12)
+            st.info("Showing anchor location (coverage rows don't include POI coordinates).")
+
         else:
-            st.info("No rows available for the current filters.")
+            st.map(pd.DataFrame({"latitude": [data_center_lat], "longitude": [data_center_lon]}), zoom=12)
+            st.info("No mappable columns found; showing dataset-derived center point.")
+
         st.markdown(
-            f"<div class='muted small'>Anchor: {preset} • Radius: {radius_m}m • City label: {city}</div>",
+            f"<div class='muted small'>Dataset center: {data_center_lat:.5f}, {data_center_lon:.5f} • Radius: {radius_m}m</div>",
             unsafe_allow_html=True,
         )
 
-    # Score distribution
-    st.write("")
-    st.markdown("### Score distribution")
-    if total and "score" in df.columns:
-        hist = df[["score"]].copy()
-        hist["bucket"] = (hist["score"] // 10) * 10
-        dist = hist.groupby("bucket").size().reset_index(name="count").sort_values("bucket").set_index("bucket")
-        st.bar_chart(dist)
-    else:
-        st.info("Score distribution is unavailable (no results).")
 
 with tab_results:
-    left, right = st.columns([1.35, 1])
+    st.markdown("### Results table")
 
-    with left:
-        st.subheader("Results table")
-        view_cols = ["name", "category", "rating", "review_count", "distance_m", "score", "is_competitor"]
-        existing = [c for c in view_cols if c in df.columns]
-        st.dataframe(df[existing], use_container_width=True, height=520)
+    if analysis_df is None or analysis_df.empty:
+        st.info("No results for the selected filters (mode/category/radius).")
+    else:
+        preferred_cols = [
+            "name", "poi_name",
+            "category_name", "category_id",
+            "lat", "lng", "poi_lat", "poi_lon",
+            "distance_m",
+            "is_competitor",
+            "score", "rating",
+            "review_count",
+            "address", "website", "phone",
+            "services_count", "nearest_distance_m", "competitor_share",
+            "coverage_status", "coverage_adequate",
+            "anchor_name", "anchor_lat", "anchor_lon",
+        ]
+        show_cols = [c for c in preferred_cols if c in analysis_df.columns]
+        if not show_cols:
+            show_cols = list(analysis_df.columns)[:18]
 
-        csv_bytes = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇️ Download CSV",
-            data=csv_bytes,
-            file_name=export_name,
-            mime="text/csv",
-        )
+        results_view = analysis_df[show_cols].copy()
+        st.dataframe(results_view, use_container_width=True, height=520)
 
-    with right:
-        st.subheader("Top performers")
-        if total:
-            top = df.sort_values(["score", "rating", "review_count"], ascending=False).head(10)
+        st.markdown("### Export (what you see is what you export)")
+        export_left, export_right = st.columns([1, 1])
 
-            # Build PDF memo
-            pdf_bytes = build_executive_memo_pdf(
-                city=city,
-                preset=preset,
-                category=category,
-                radius_m=radius_m,
-                total=total,
-                avg_score=avg_score,
-                avg_rating=avg_rating,
-                density=density,
-                opp_index=opp_index,
-                comp_share=comp_share,
-                pressure_0_100=pressure_0_100,
-                risk_0_100=risk_0_100,
-                rec=rec,
-                snapshot_df=snap,
-                top_df=top,
-            )
-
+        with export_left:
+            csv_bytes = results_view.to_csv(index=False).encode("utf-8")
             st.download_button(
-                "⬇️ Download Executive Memo (PDF)",
-                data=pdf_bytes,
-                file_name=f"executive_memo_{preset.replace(' ', '_')}_{category}_{radius_m}m.pdf",
-                mime="application/pdf",
+                "⬇️ Download CSV (shown results)",
+                data=csv_bytes,
+                file_name=f"results_{mode}_{category}_{int(radius_m)}m.csv",
+                mime="text/csv",
                 use_container_width=True,
             )
 
-            top_cols = [c for c in ["name", "rating", "review_count", "distance_m", "score", "is_competitor"] if c in top.columns]
-            st.dataframe(top[top_cols], use_container_width=True, height=350)
-        else:
-            st.info("No results to display.")
+        with export_right:
+            xlsx_bytes = df_to_xlsx_bytes(results_view, sheet_name="results")
+            st.download_button(
+                "⬇️ Download XLSX (shown results)",
+                data=xlsx_bytes,
+                file_name=f"results_{mode}_{category}_{int(radius_m)}m.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
-        st.subheader("Competitor share")
-        if total and "is_competitor" in df.columns:
-            comp = pd.DataFrame(
-                {
-                    "segment": ["Competitors", "Non-competitors"],
-                    "count": [int(df["is_competitor"].sum()), int((~df["is_competitor"]).sum())],
-                }
-            ).set_index("segment")
-            st.bar_chart(comp)
+    st.write("")
+    st.markdown("### Executive Memo (PDF)")
+    if df is None or df.empty:
+        st.info("No results to export.")
+    else:
+        # choose top rows based on mode
+        if is_coverage:
+            work = normalize_actor7_schema(df).copy()
+            if "coverage_adequate" not in work.columns and "coverage_status" in work.columns:
+                work["coverage_adequate"] = work["coverage_status"].astype(str).str.lower().eq("adequate")
+            if "services_count" in work.columns:
+                work["services_count"] = pd.to_numeric(work["services_count"], errors="coerce").fillna(0)
+
+            sort_cols = [c for c in ["coverage_adequate", "services_count", "nearest_distance_m"] if c in work.columns]
+            if sort_cols:
+                # prefer inadequate + low service counts (opportunity signals)
+                top = work.sort_values(sort_cols, ascending=[True, True, False][: len(sort_cols)]).head(12)
+            else:
+                top = work.head(12)
+            snap_pdf = build_multi_radius_snapshot_coverage(df, category=category)
         else:
-            st.info("Competitor share is unavailable (no results).")
+            sort_cols = [c for c in ["score", "rating", "review_count"] if c in (analysis_df.columns if analysis_df is not None else [])]
+            if analysis_df is not None and not analysis_df.empty and sort_cols:
+                top = analysis_df.sort_values(sort_cols, ascending=False).head(10)
+            elif analysis_df is not None and not analysis_df.empty:
+                top = analysis_df.head(10)
+            else:
+                top = df.head(10)
+            snap_pdf = build_multi_radius_snapshot_poi(df)
+
+        pdf_bytes = build_executive_memo_pdf(
+            city=city,
+            preset=preset,
+            category=category,
+            radius_m=radius_m,
+            total=int(total),
+            avg_score=float(avg_score),
+            avg_rating=float(avg_rating),
+            density=float(density),
+            opp_index=float(opp_index),
+            comp_share=float(comp_share),
+            pressure_0_100=float(pressure_0_100),
+            risk_0_100=float(risk_0_100),
+            rec=rec,
+            snapshot_df=snap_pdf,
+            top_df=top,
+            is_coverage=bool(is_coverage),
+        )
+
+        st.download_button(
+            "⬇️ Download Executive Memo (PDF)",
+            data=pdf_bytes,
+            file_name=f"executive_memo_{preset.replace(' ', '_')}_{category}_{radius_m}m.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
 
 with tab_method:
-    st.markdown("### What this dashboard represents")
     st.markdown(
         """
-This dashboard illustrates the structure and reporting format of an automated location analytics pipeline.  
-Data shown here is **sample-formatted for demonstration purposes**.
+### Method (what the dashboard computes)
 
-In production, the same dashboard can be connected to a live pipeline that:
-- Collects POIs from selected sources
-- Cleans & deduplicates entities
-- Applies scoring rules (distance, quality signals, category relevance, competitor labeling)
-- Outputs structured datasets suitable for analytics and decision-making
+**POI mode (rows with coordinates):**
+- Supports Actor #7 POI schema: `poi_lat/poi_lon/poi_name` (auto-normalized to `lat/lng/name`)
+- Filters by **Radius** using `distance_m` (computed if missing)
+- Density = POIs per km² within selected radius
+- Competitor share = % rows flagged as competitor (via keywords)
+
+**Coverage mode (catchment metrics):**
+- Filters by **category_id** using UI mapping (e.g., `pharmacy` → `health_pharmacy`)
+- Results = `SUM(services_count)` across anchors for the selected radius & category
+- Density = results / km²
+- Map uses `anchor_lat/anchor_lon` because coverage rows do not include POI coordinates
+
+**Apify Run ID vs Dataset ID**
+- **Run ID** identifies a specific Actor run in Apify (from which we auto-resolve its `defaultDatasetId`).
+- **Dataset ID** directly identifies the dataset to load.
 """
     )
-
-    st.markdown("### KPI logic (high-level)")
-    st.markdown(
-        """
-- **Avg Score (0–100):** composite of rating, review volume, distance-to-anchor, competitor penalty  
-- **Density (/km²):** count divided by circle area (πr²)  
-- **Competitor share:** % of rows labeled as competitor  
-- **Opportunity:** (AvgScore/100) × (1 − competitorShare)  
-- **Competitive Pressure:** combination of density and competitor share  
-- **Entry Risk:** pressure + low quality signals (low avg score)
-"""
-    )
-
-    st.markdown("### Notes on demo realism")
-    st.markdown(
-        """
-- In demo mode, the snapshot scales the **generated count** with radius area, so density behaves intuitively across radii.  
-- In real (Apify) mode, density reflects the actual dataset size returned by your Actor for the chosen radius/filtering.
-"""
-    )
-
-st.caption("Note: Data shown is sample-formatted for demonstration. The dashboard can be connected to a live backend when needed.")
